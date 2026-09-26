@@ -5,7 +5,6 @@ import { ManageCategoriesDialog } from './ManageCategoriesDialog'
 import { makeCategory } from '@/test/factories'
 
 const upsertMutate = vi.fn()
-const upsertTagMutate = vi.fn()
 const deleteMutate = vi.fn()
 const reorderMutate = vi.fn()
 const categoryHasSplits = vi.fn()
@@ -19,7 +18,6 @@ vi.mock('@/data/hooks', () => ({
     ],
   }),
   useUpsertCategory: () => ({ mutate: upsertMutate }),
-  useUpsertTag: () => ({ mutate: upsertTagMutate }),
   useDeleteCategory: () => ({ mutate: deleteMutate }),
   useReorderCategories: () => ({ mutate: reorderMutate }),
 }))
@@ -30,7 +28,6 @@ vi.mock('sonner', () => ({ toast: { error: (msg: string) => toastError(msg) } })
 describe('<ManageCategoriesDialog>', () => {
   beforeEach(() => {
     upsertMutate.mockClear()
-    upsertTagMutate.mockClear()
     deleteMutate.mockClear()
     reorderMutate.mockClear()
     toastError.mockClear()
@@ -49,19 +46,6 @@ describe('<ManageCategoriesDialog>', () => {
     expect(upsertMutate).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'Pets', icon: 'tag.fill' }),
     )
-  })
-
-  it('creates a tag (name + color only) when the add-row is in Tag mode', async () => {
-    render(<ManageCategoriesDialog open onOpenChange={() => {}} />)
-    await userEvent.click(screen.getByRole('button', { name: 'tag' }))
-    await userEvent.type(screen.getByPlaceholderText('New tag…'), 'Vacation')
-    await userEvent.click(screen.getByText('Add'))
-    expect(upsertTagMutate).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'Vacation', color: expect.any(String) }),
-      expect.anything(),
-    )
-    // Tag mode never touches the categories table.
-    expect(upsertMutate).not.toHaveBeenCalled()
   })
 
   it('renames on blur', async () => {

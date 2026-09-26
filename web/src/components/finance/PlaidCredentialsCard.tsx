@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { KeyRound, Sparkles, Trash2 } from 'lucide-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useMutation } from '@/demo/demoMutation'
+import { useMutation } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'

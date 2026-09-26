@@ -33,6 +33,7 @@ vi.mock('@/data/hooks', () => ({
   useSetCategory: () => ({ mutateAsync: vi.fn() }),
   useSetHidden: () => ({ mutateAsync: vi.fn() }),
   useSetReimbursement: () => ({ mutate: vi.fn() }),
+  useSetExcludeFromTotals: () => ({ mutate: vi.fn() }),
   useUpsertCategory: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
   useDeleteCategory: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
   useBulkCategorizeMerchant: () => ({ mutate: vi.fn() }),

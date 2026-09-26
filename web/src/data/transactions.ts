@@ -1,8 +1,6 @@
 // Mirrors PocketLens/Services/TransactionService.swift. Direct PostgREST.
 
 import { supabase } from '@/lib/supabase'
-import { isDemoMode } from '@/demo/demoMode'
-import { demoSearch } from '@/demo/demoStore'
 import { monthBounds } from '@/lib/dates'
 import { fetchCategories, fetchRules } from './categories'
 import { logCategorize, logHide } from './activity'
@@ -27,6 +25,26 @@ export async function fetchTransactions(
     .select(SELECT)
     .gte('effective_date', start)
     .lte('effective_date', end)
+  if (!opts.includeExcluded) q = q.eq('exclude_from_totals', false)
+  const { data, error } = await q.order('effective_date', { ascending: false })
+  if (error) throw error
+  return (data ?? []) as unknown as Transaction[]
+}
+
+/** Transactions in an arbitrary [startISO, endISO] range (inclusive), filtered+ordered
+ *  by effective_date. Excludes exclude_from_totals by default; pass `includeExcluded`
+ *  to keep excluded/transfer rows — the Reports page fetches everything and applies
+ *  its exclude toggles client-side so toggling is instant. */
+export async function fetchTransactionsRange(
+  startISO: string,
+  endISO: string,
+  opts: { includeExcluded?: boolean } = {},
+): Promise<Transaction[]> {
+  let q = supabase
+    .from('transactions')
+    .select(SELECT)
+    .gte('effective_date', startISO)
+    .lte('effective_date', endISO)
   if (!opts.includeExcluded) q = q.eq('exclude_from_totals', false)
   const { data, error } = await q.order('effective_date', { ascending: false })
   if (error) throw error
@@ -58,9 +76,6 @@ export const SEARCH_LIMIT = 200
  *  The RPC returns ids only; the rows are re-fetched with the standard SELECT
  *  so embeds decode exactly like every other list. Newest first. */
 export async function searchTransactions(query: string): Promise<Transaction[]> {
-  // The RPC is unavailable in demo mode (no DB) — match the fixtures in memory so
-  // search still works on the landing page.
-  if (isDemoMode()) return demoSearch(query).slice(0, SEARCH_LIMIT)
   const { data, error } = await supabase.rpc('search_transactions', {
     p_query: query,
     p_limit: SEARCH_LIMIT,
@@ -146,6 +161,21 @@ export async function fetchTransactionById(id: UUID): Promise<Transaction | null
   const { data, error } = await supabase.from('transactions').select(SELECT).eq('id', id).maybeSingle()
   if (error) throw error
   return (data as unknown as Transaction) ?? null
+}
+
+/** Include/exclude a transaction from spending-plan + spend totals by flipping
+ *  `exclude_from_totals` directly (the column every totals query already filters
+ *  on — transfer legs are excluded the same way when linked). Callers keep the
+ *  Hidden tile's own flow (hidden ⇒ excluded) separate. */
+export async function setExcludeFromTotals(
+  transactionId: UUID,
+  exclude: boolean,
+): Promise<void> {
+  const { error } = await supabase
+    .from('transactions')
+    .update({ exclude_from_totals: exclude })
+    .eq('id', transactionId)
+  if (error) throw error
 }
 
 /** Set a category WITHOUT learning (bulk/auto application). */
@@ -414,8 +444,10 @@ export async function fetchSpendByCategory(
   month: Date,
 ): Promise<Array<{ category: Category; total: number }>> {
   const { start } = monthBounds(month) // view months are first-of-month dates
+  // Archived categories can still hold spend history, so look up against the
+  // full list — the default fetch excludes them.
   const [cats, res] = await Promise.all([
-    fetchCategories(),
+    fetchCategories({ includeInactive: true }),
     supabase.from('category_spend').select('category_id, spent').eq('month', start),
   ])
   if (res.error) throw res.error

@@ -134,9 +134,9 @@ def _fetch_matchable(supabase, user_id, lookback_days, full):
     transaction date (`effective_date`) AND the ingest time (`created_at`): a
     leg can be delivered by Plaid long after its transaction date. Investment
     cash movements arrive whenever the *investments* product readies —
-    typically on an incremental (full=False) webhook fired after the
-    transaction cursor is already set, carrying dates far beyond the 30-day date
-    window (a backfill spans 730). Scoping by `effective_date` alone hid those
+    typically on a later incremental sync after the transaction cursor is
+    already set, carrying dates far beyond the 30-day date window (a backfill
+    spans 730). Scoping by `effective_date` alone hid those
     freshly-ingested legs from the matcher, so they were neither paired nor
     excluded until some later `full=True` run happened to rescan them.
     A row that just arrived is exactly what the matcher must consider, whatever

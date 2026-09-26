@@ -1,64 +1,76 @@
 #!/usr/bin/env bash
-# One command for the whole local stack — everything on one machine:
+# Local dev — no Docker, no AWS. Just uvicorn + vite, pointed at a Supabase
+# Cloud dev project (the free tier gives you 2 projects: one for prod, one
+# for dev — better parity than a local Docker Supabase, and nothing to run).
 #
-#   ./scripts/local-dev.sh
-#
-#   1. supabase start        local Postgres + Auth (Docker), migrations applied
-#   2. sync-service :8000    pointed at the local stack, LAN-reachable (0.0.0.0)
-#   3. web :5173             vite wired to the local stack
-#
-# Deployed configs are untouched: this script only injects env vars for the
-# processes it starts.
+# One-time setup:
+#   1. Create a dev project at https://supabase.com/dashboard
+#   2. cd finance-backend && supabase link --project-ref <dev-project-ref> \
+#        && supabase db push
+#   3. Copy finance-backend/sync-service/.env.example to .env (not committed)
+#      and fill in: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY
+#      (from the dev project's API settings), plus Plaid / AI keys as needed.
+#   4. ./scripts/local-dev.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# Ensure this worktree's .env files + shared Fernet key exist (idempotent).
-# Fixes "env on the wrong worktree" — everything symlinks to one shared dir.
-./scripts/setup-local.sh
+die() { echo "✗ $1" >&2; exit 1; }
 
-if ! docker info >/dev/null 2>&1; then
-  echo "✗ Docker isn't running — start Docker Desktop and wait for it to be ready, then re-run."
-  exit 1
+# Load the service .env if present (gitignored, never committed).
+if [ -f finance-backend/sync-service/.env ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . finance-backend/sync-service/.env
+  set +a
 fi
 
-echo "▸ supabase (Docker)…"
-(cd finance-backend && supabase start >/dev/null 2>&1 || true)
+[ -n "${SUPABASE_URL:-}" ] \
+  || die "SUPABASE_URL is not set. Create a dev Supabase project, run the migrations (see header), and put the API keys in finance-backend/sync-service/.env"
+[ -n "${SUPABASE_ANON_KEY:-}" ] \
+  || die "SUPABASE_ANON_KEY is not set (Supabase dashboard → Project Settings → API)."
+[ -n "${SUPABASE_SERVICE_ROLE_KEY:-}" ] \
+  || die "SUPABASE_SERVICE_ROLE_KEY is not set (Supabase dashboard → Project Settings → API)."
+case "$SUPABASE_URL" in
+  *localhost*|*127.0.0.1*)
+    die "SUPABASE_URL points at localhost, but local dev no longer runs Supabase via Docker. Point it at your Supabase Cloud dev project." ;;
+esac
 
-# Wait for the DB container to be ready before reading status
-echo "  waiting for supabase DB to be ready…"
-for i in $(seq 1 30); do
-  if (cd finance-backend && supabase status -o env >/dev/null 2>&1); then
-    break
-  fi
-  if [ "$i" -eq 30 ]; then
-    echo "✗ supabase DB did not become ready in time. Run: cd finance-backend && supabase start --debug"
-    exit 1
-  fi
-  sleep 2
-done
-eval "$(cd finance-backend && supabase status -o env | sed 's/^/SB_/')"
+command -v node >/dev/null 2>&1 || die "node not found (need 20+)."
+command -v npm  >/dev/null 2>&1 || die "npm not found."
+command -v python3 >/dev/null 2>&1 || die "python3 not found (need 3.11+)."
 
-# Persistent local Fernet key, shared across ALL worktrees (setup-local.sh owns
-# it). Same key everywhere → Plaid secrets stored in the shared local DB always
-# decrypt, no matter which worktree started the sync-service.
-CREDENTIALS_ENC_KEY="$(cat "${POCKETLENS_LOCAL_DIR:-$HOME/.pocketlens}/credentials-enc.key")"
+# uvicorn: prefer the shared venv from scripts/setup-local.sh, else PATH.
+SHARED="${POCKETLENS_LOCAL_DIR:-$HOME/.pocketlens}"
+UVICORN=""
+if [ -x "$SHARED/venv/bin/uvicorn" ]; then
+  UVICORN="$SHARED/venv/bin/uvicorn"
+elif command -v uvicorn >/dev/null 2>&1; then
+  UVICORN="uvicorn"
+else
+  die "uvicorn not found. Install: python3 -m pip install uvicorn (or run scripts/setup-local.sh)"
+fi
+
+# Fernet key for Plaid secrets at rest — shared key file wins, env fallback.
+if [ -f "$SHARED/credentials-enc.key" ]; then
+  CREDENTIALS_ENC_KEY="$(cat "$SHARED/credentials-enc.key")"
+fi
+[ -n "${CREDENTIALS_ENC_KEY:-}" ] \
+  || die "CREDENTIALS_ENC_KEY is not set. Generate one: python3 -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
 
 cleanup() { kill 0 2>/dev/null; }
 trap cleanup EXIT INT TERM
 
 echo "▸ sync-service on :8000…"
-VENV="${POCKETLENS_LOCAL_DIR:-$HOME/.pocketlens}/venv"
 (cd finance-backend/sync-service && \
-  SUPABASE_URL="$SB_API_URL" \
-  SUPABASE_SERVICE_ROLE_KEY="$SB_SERVICE_ROLE_KEY" \
+  SUPABASE_URL="$SUPABASE_URL" \
+  SUPABASE_SERVICE_ROLE_KEY="$SUPABASE_SERVICE_ROLE_KEY" \
   CREDENTIALS_ENC_KEY="$CREDENTIALS_ENC_KEY" \
-  TRIGGER_SECRET=local-dev-secret \
-  "$VENV/bin/uvicorn" api:app --host 0.0.0.0 --port 8000) &
+  "$UVICORN" api:app --host 0.0.0.0 --port 8000) &
 
 echo "▸ web on :5173…"
 (cd web && \
-  VITE_SUPABASE_URL="$SB_API_URL" \
-  VITE_SUPABASE_ANON_KEY="$SB_ANON_KEY" \
+  VITE_SUPABASE_URL="$SUPABASE_URL" \
+  VITE_SUPABASE_ANON_KEY="$SUPABASE_ANON_KEY" \
   VITE_BACKEND_URL=http://localhost:8000 \
   npm run dev) &
 
@@ -69,11 +81,9 @@ LAN_IP=$( { ipconfig getifaddr en0 2>/dev/null \
   || ip route get 1 2>/dev/null | awk '{print $7; exit}'; } | head -n1)
 LAN_IP=${LAN_IP:-<your-lan-ip>}
 echo ""
-echo "── local stack ─────────────────────────────────────────────"
+echo "── local dev (no Docker) ───────────────────────────────"
 echo "  web        http://localhost:5173"
 echo "  backend    http://localhost:8000   (LAN: http://$LAN_IP:8000)"
-echo "  supabase   $SB_API_URL   (Studio: http://localhost:54323)"
-echo "  e2e        web/e2e/run-local.sh"
-echo "  reset db   (cd finance-backend && supabase db reset)"
-echo "────────────────────────────────────────────────────────────"
+echo "  supabase   $SUPABASE_URL   (Cloud dev project)"
+echo "────────────────────────────────────────────────────────"
 wait

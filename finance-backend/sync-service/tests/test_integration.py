@@ -267,9 +267,9 @@ def test_category_spend_nets_reimbursements(make_user):
 
 # ── 5b. current_net_worth view (live net worth, snapshot-writer semantics) ──
 def test_current_net_worth_view(make_user):
-    """The view must mirror sync.write_net_worth_snapshot: latest balance per
-    account, active accounts only, per-account clamp at zero, credit/loan =
-    liability, separate-account balance = signed ledger sum."""
+    """The current_net_worth view: latest balance per account, active accounts
+    only, per-account clamp at zero, credit/loan = liability, separate-account
+    balance = signed ledger sum."""
     _uid, client = make_user()
 
     checking = _account(client, name="Checking")

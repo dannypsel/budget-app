@@ -1,22 +1,32 @@
-import { Compass, Home, Landmark, ReceiptText, Settings, Wallet, type LucideIcon } from "lucide-react";
+// The single nav config for the whole app: the Simplifi-style sidebar.
+// Dashboard and Spending Plan intentionally land on the same home page (the
+// spending plan IS this app's dashboard); each entry keeps its own highlight.
+
+import {
+  BarChart3,
+  CreditCard,
+  Landmark,
+  LayoutDashboard,
+  PiggyBank,
+  ReceiptText,
+  Settings,
+  type LucideIcon,
+} from "lucide-react";
 
 type NavItem = { label: string; to: string; icon: LucideIcon };
 
-const home: NavItem = { label: "Home", to: "/", icon: Home };
-const transactions: NavItem = { label: "Transactions", to: "/transactions", icon: ReceiptText };
-const budget: NavItem = { label: "Budget", to: "/budgets", icon: Wallet };
-const explore: NavItem = { label: "Explore", to: "/explore", icon: Compass };
-const balances: NavItem = { label: "Balances", to: "/accounts", icon: Landmark };
-const settings: NavItem = { label: "Settings", to: "/settings", icon: Settings };
+export const sidebarNav: NavItem[] = [
+  { label: "Dashboard", to: "/", icon: LayoutDashboard },
+  { label: "Transactions", to: "/transactions", icon: ReceiptText },
+  { label: "Accounts", to: "/accounts", icon: Landmark },
+  { label: "Spending Plan", to: "/spending-plan", icon: PiggyBank },
+  { label: "Churning", to: "/churning", icon: CreditCard },
+  { label: "Reports", to: "/reports", icon: BarChart3 },
+  { label: "Settings", to: "/settings", icon: Settings },
+];
 
-/** Mobile bottom capsule — the five primary sections (Explore is desktop-only). */
-export const primaryNav: NavItem[] = [home, transactions, budget, balances, settings];
-
-/** Desktop top bar — same sections plus Explore, ordered before Balances. */
-export const desktopNav: NavItem[] = [home, transactions, budget, explore, balances, settings];
-
-/** Active-route matching: exact for "/", prefix for section roots so
- *  /accounts/:id highlights Balances. Query params are ignored (pathname only). */
+/** Active-route matching: exact for "/" and "/spending-plan", prefix for
+ *  section roots so /accounts/:id highlights Accounts. Pathname only. */
 export function isNavActive(pathname: string, to: string): boolean {
   if (to === "/") return pathname === "/";
   return pathname === to || pathname.startsWith(`${to}/`);

@@ -102,7 +102,7 @@ export default function SeparateAccountDetailPage() {
         >
           <Link to="/accounts">
             <ArrowLeft className="h-4 w-4 mr-2" />
-            Balances
+            Accounts
           </Link>
         </Button>
 

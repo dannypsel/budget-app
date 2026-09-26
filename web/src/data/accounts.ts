@@ -6,12 +6,12 @@ import { warmFetch } from '@/data/backend'
 const BACKEND = import.meta.env.VITE_BACKEND_URL as string
 import type { Account, CurrentNetWorth } from '@/types/domain'
 
-export async function fetchAccounts(): Promise<Account[]> {
-  const { data, error } = await supabase
-    .from('accounts')
-    .select('*')
-    .eq('is_active', true)
-    .order('display_order', { ascending: true })
+export async function fetchAccounts(
+  opts: { includeInactive?: boolean } = {},
+): Promise<Account[]> {
+  let q = supabase.from('accounts').select('*')
+  if (!opts.includeInactive) q = q.eq('is_active', true)
+  const { data, error } = await q.order('display_order', { ascending: true })
   if (error) throw error
   return (data ?? []) as Account[]
 }
@@ -42,6 +42,25 @@ export async function fetchCurrentNetWorth(): Promise<CurrentNetWorth | null> {
     .maybeSingle()
   if (error) throw error
   return data as CurrentNetWorth | null
+}
+
+/** Rename a Plaid account's display name (client-owned `name` column). */
+export async function renameAccount(accountId: string, name: string): Promise<void> {
+  const { error } = await supabase
+    .from('accounts')
+    .update({ name })
+    .eq('id', accountId)
+  if (error) throw error
+}
+
+/** Re-activate a previously hidden account (the inverse of hideAccount) so it
+ *  appears in balances, totals, and syncs again. */
+export async function unhideAccount(accountId: string): Promise<void> {
+  const { error } = await supabase
+    .from('accounts')
+    .update({ is_active: true })
+    .eq('id', accountId)
+  if (error) throw error
 }
 
 /** Soft-delete a single Plaid account. Sets is_active = false so it stops

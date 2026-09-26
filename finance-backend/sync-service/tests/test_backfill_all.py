@@ -49,10 +49,18 @@ def _item(item_id, user_id=USER, is_active=True, cursor="cur", last_backfill_at=
 
 
 def _wire(monkeypatch, db, *, user_id=USER, sync_calls=None):
+    import notify
+    import reconcile
     monkeypatch.setattr(api, "get_supabase", lambda: db)
     monkeypatch.setattr(api, "_user_id_from_token", lambda t: user_id)
-    if sync_calls is not None:
-        monkeypatch.setattr(api, "run_sync", lambda uid: sync_calls.append(uid))
+    # The refresh chain runs inline inside the endpoint; reconcile and notify
+    # are out of scope for these endpoint tests — stub them. run_sync is
+    # always stubbed too so no test hits Plaid.
+    monkeypatch.setattr(reconcile, "run_reconcile", lambda uid: {})
+    monkeypatch.setattr(notify, "run_notify", lambda **kw: {})
+    recorded = sync_calls if sync_calls is not None else []
+    monkeypatch.setattr(api, "run_sync",
+                        lambda uid: recorded.append(uid) or {"items_synced": 1})
 
 
 def _iso(delta_days=0):
@@ -73,7 +81,13 @@ def test_backfill_all_resets_every_active_item(monkeypatch, client):
 
     resp = client.post("/backfill-all", headers={"Authorization": "Bearer tok"})
     assert resp.status_code == 200
-    assert resp.json() == {"status": "ok", "items": 2}
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert body["items"] == 2
+    # The inline refresh summary ships with the response.
+    for key in ("items_synced", "items_failed", "transactions_added",
+                "categorized", "credits_detected", "notifications"):
+        assert key in body, key
 
     for iid in ("i1", "i2"):
         row = db.one("plaid_items", id=iid)
@@ -129,7 +143,8 @@ def test_backfill_all_allowed_after_cooldown(monkeypatch, client):
 
     resp = client.post("/backfill-all", headers={"Authorization": "Bearer tok"})
     assert resp.status_code == 200
-    assert resp.json()["status"] == "ok"
+    body = resp.json()
+    assert body["status"] == "ok"
 
 
 def test_backfill_all_401_without_auth(monkeypatch, client):

@@ -1,75 +1,136 @@
 # Features
 
-What PocketLens does, grouped by area.
+What this app does, grouped by area. (Stripped-down fork of PocketLens —
+see [CHANGES.md](./CHANGES.md) for what was removed vs upstream.)
+
+## Navigation
+
+- Simplifi-style sidebar: hamburger (top-left) opens a slide-over on
+  mobile, persistent rail on desktop. Sections: Dashboard, Transactions,
+  Accounts, Spending Plan, Churning, Reports, Settings.
+- Notification bell with unread badge stays in the top bar.
 
 ## Auth & accounts
 
-- Email/password sign-up and sign-in (Supabase Auth), multi-user with per-user RLS isolation.
-- Interactive demo: when logged out, the home page shows the app running on sample data
-  (read-only, no database calls) instead of a login wall.
+- Email/password sign-up and sign-in (Supabase Auth), multi-user with
+  per-user RLS isolation.
 - Forgot-password / reset flow via emailed recovery link.
-- User profile (first/last name) captured at signup, shown in Settings.
-- Password policy enforced client-side (10+ characters plus complexity).
+- Link banks and credit cards through Plaid; institution logos and names
+  shown per account.
+- Accounts page: "All Accounts" total, collapsible Cash & Checking /
+  Savings / Credit / Other groups with subtotals, per-account detail with
+  recent transactions and a churning-tracker link for linked cards.
+- "New" account dialog: fast manual add (name, checking/savings/credit,
+  starting balance) or connect a bank with Plaid.
+- Manual "separate" accounts (non-Plaid): balance ledger with add/subtract
+  entries and recurring contributions.
+- Quick incremental sync (cursor delta) and a full 730-day re-import
+  (rate-limited by a cooldown).
+- Manual refresh: tap refresh in the app and the API runs Plaid sync →
+  reconcile → AI categorization → card-credit detection → notifications,
+  inline, and returns a summary. No scheduler, no webhooks.
+  a drift reconciler.
 
-## Bank & manual accounts
+## Spending plan (home)
 
-- Link banks and brokerages through Plaid; institution logos and names shown per account.
-- Accounts grouped into a net-worth header with a Liquid / Semi-liquid / Liabilities split, and
-  an Assets vs Liabilities T-account layout.
-- Manual "separate" accounts (non-Plaid): balance ledger with add/subtract entries and recurring
-  contributions.
-- Net worth over time chart from daily snapshots.
-- Quick incremental sync (cursor delta) and a full 730-day re-import (rate-limited by a cooldown).
-- Real-time updates via Plaid webhooks, with a daily cron as safety net plus a drift reconciler.
+- Planned monthly income (one setting).
+- Bills: name, amount, due day of month, optional category label, active
+  toggle — all CRUD.
+- Savings goals: name, target amount, monthly contribution — all CRUD.
+- Plan math: `safe-to-spend = planned income − active bills − goal
+  contributions − spent this month`, with spent-so-far progress and
+  per-day remaining for the rest of the month.
+- Deadlines widget: upcoming signup-bonus deadlines, card-credit expiries,
+  annual-fee dates, and card cancel-by dates, soonest first.
 
 ## Transactions
 
 - Month-navigated transaction list with per-month Spent / Income totals.
-- Cross-month search (substring + trigram typo tolerance + amount match).
-- Tap-to-categorize, a swipe-to-categorize review queue, and bulk-categorize by merchant.
-- Auto-categorization: per-merchant learned memory plus keyword rules with optional money
-  direction and amount conditions; one-click auto-categorize of everything uncategorized.
-- Tags: create, attach/detach, filter by tag; tag→category rules that set a category on attach.
-- Transaction splits across multiple categories (splits sum to the transaction amount).
-- Transfers: automatic detection of paired legs across accounts (bank↔bank, bank↔brokerage),
-  one-sided external moves, manual link/unlink, and suggestion cards for fuzzy matches. Transfer
-  legs are excluded from spend/income totals.
-- Reimbursements (contra-expense): flag an incoming credit to offset a category's spend rather
-  than count as income; card refunds on credit/loan accounts are auto-flagged.
-- Hidden transactions: keep a row but drop it from totals and the categorize queue.
-- Recurring-charge detection (cadence + consistent amount) with confirm / ignore / remove and
-  per-series bulk categorize.
-- CSV export of the current transaction view.
+- Cross-month search (substring + typo tolerance + amount match).
+- Tap-to-categorize, a categorize review queue, and bulk-categorize by
+  merchant.
+- Auto-categorization: per-merchant learned memory plus keyword rules
+  (deterministic, always win); the Jev AI decision model then classifies the
+  rest against your live categories with calibrated confidence, one Brave
+  Search merchant lookup + re-classify for low-confidence items, and anything
+  still unsure stays in the review queue. Repeat merchants are cached.
+  One-click "Auto-categorize" of everything uncategorized on the Transactions
+  page; runs automatically after every Plaid sync and CSV import. Toggle,
+  provider (`jev`/`gemini`/`off`), and confidence threshold in
+  Settings → AI Categorization.
+- "Ignore in spending plan" flag per transaction (excluded from plan math).
+- Transfers: automatic detection of paired legs across accounts so card
+  payments don't inflate spending; transfer legs are excluded from totals.
+- Reimbursements (contra-expense): flag an incoming credit to offset a
+  category's spend rather than count as income.
+- Hidden transactions: keep a row but drop it from totals.
+- Recurring-charge detection (cadence + consistent amount) with confirm /
+  ignore / remove.
+- CSV export of the current transaction view; CSV import via the Import
+  button (column mapping, bank-statement sign convention, idempotent —
+  re-imports skip duplicates).
 
-## Budgets
+## Churning tracker
 
-- Per-category monthly limits, effective-dated so each past month shows its true historical
-  limit against that month's spend; editable per-month.
-- Create, edit, and delete categories, with color, icon, and drag or keyboard reorder.
-- Zero-based budgeting (opt-in): income-driven, assign every dollar until Ready-to-Assign = 0,
-  cover overspend by moving money between envelopes, with month-to-month rollover
-  (strict/flexible) and an overspend-cover prompt.
-- Spending health check (savings rate) and spend-by category / tag / category-group donuts.
-- Budget spend pie with tap-to-select category drill-down.
+- Cards: name, issuer, last 4, opened date, annual fee + fee date, cancel-by
+  date, notes, optional link to a synced Plaid account.
+- Signup bonuses: description, spend required, spend window
+  (defaults to card opened date → deadline), bonus value, status
+  (in progress / completed / failed). Live progress bar measuring qualifying
+  spend on the linked account inside the window, with remaining amount and
+  days left.
+- Card credits (airline, streaming, etc.): name, amount, frequency
+  (annual / semiannual / monthly), reset date, notes — plus **automatic
+  usage detection**: configure merchant keywords + expected amount and the
+  credit marks itself used when the refund posts (money-in transaction on
+  the linked account in the current cycle), with the triggering transaction
+  linked; manual mark-used / unmark override always wins (unmarking blocks
+  re-detection of that transaction). Credit cycles roll over automatically
+  from frequency + reset date.
+- "Credits needing attention" section: unused credits nearing their reset
+  date (configurable "remind me N days before", default 7).
+- Deadline badges on the card list; full detail per card.
 
-## Explore & reports
+## Notifications
 
-- Explore page: filter transactions by account, category, tag, amount, and date range, with
-  saved filter sets.
-- Summary stats: total spending, total income, net cash flow, transaction count, average size.
-- Breakdown donuts (spend by category / tag / group) using each entity's stored color, and a
-  daily income-vs-spending activity chart. Hovering a slice or day lists the transactions behind
-  it.
+- In-app notification center: bell icon with unread badge in the top bar,
+  newest-first list, per-item and mark-all-read. Works with zero config.
+- Triggers: unused credit expiring within its remind window, signup bonus
+  deadline within 14 days with spend remaining, annual fee / cancel-by
+  within 30 days. Each reminder is stored once per credit-period
+  (or bonus/date) — no duplicate reminders.
+- Per-type toggles and lead-time days in Settings → Notifications (a
+  credit's own "remind me N days before" still wins when set).
+
+## Reports
+
+- Date presets (this/last month, last 3/6/12 months, custom range), group by
+  category / merchant / account, account + category filters, toggles to
+  exclude transfers and budget-ignored transactions.
+- Bar chart + donut for the grouping, monthly income-vs-spending trend
+  line, per-card spend table, CSV export of the current report.
 
 ## Settings
 
-- Manage linked banks; add a bank, quick sync, and full sync.
-- Guided Plaid onboarding wizard for bringing your own Plaid developer account, with a manual
-  key-entry fallback. Per-user credentials are validated against Plaid and stored
-  Fernet-encrypted.
-- Category, tag, and auto-classify rule management.
-- Activity log of undoable mutations (categorize, hide, budget, rule changes) with one-tap undo.
-- In-app notification inbox and per-type alert preferences (budget threshold, large charge, low
-  balance, sync failure, spend digests) with threshold controls.
-- Light / Dark / System theme toggle; profile name; sign out.
-</content>
+- General: display name (used in the dashboard greeting), currency
+  (applied app-wide), Light / Dark / System theme, "Install app" (PWA).
+- Accounts: rename, hide/unhide from totals, Plaid reconnect/disconnect,
+  add-manual-account shortcut.
+- Categories: add, rename, archive custom categories.
+- Rules: list/add/edit/delete keyword categorization rules, incl. learned
+  merchant mappings.
+- Notifications: per-type toggles + lead-time days, in-app bell only.
+- Data: CSV import/export shortcuts; delete-account danger row.
+
+## Install as an app (PWA)
+
+- "PocketLens Budget" is installable: Add to Home Screen on iOS/Android,
+  standalone display, offline app shell.
+- Service worker precaches the UI and fetches financial data
+  network-first — balances and transactions are never served stale; Plaid
+  Link flows are never cached.
+- Android/desktop Chrome: tap "Install app" (banner or Settings →
+  General). iPhone/iPad: open in Safari → Share → Add to Home Screen.
+- Requires HTTPS (or localhost): serve the production build behind TLS —
+  e.g. a public domain with a reverse proxy, or Tailscale for phone access
+  on your tailnet.

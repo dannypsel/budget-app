@@ -1,25 +1,22 @@
 import { useEffect } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
-import BottomNavBar from "@/components/BottomNavBar";
 import TopAppBar from "@/components/TopAppBar";
+import { SidebarContent } from "@/components/Sidebar";
+import { InstallBanner } from "@/components/InstallBanner";
 import { PageTransition } from "@/lib/motion";
-import { desktopNav } from "@/lib/nav";
+import { sidebarNav } from "@/lib/nav";
 
 // Drives document.title everywhere. Titles default to the nav labels in
 // lib/nav.ts (the single nav config); entries below are only non-nav routes
 // and overrides. Every page now owns its visible heading.
 const pageMeta: Record<string, { title: string }> = {
-  ...Object.fromEntries(
-    desktopNav.map((item) => [item.to, { title: item.label }]),
-  ),
-  "/activity": { title: "Activity" },
+  ...Object.fromEntries(sidebarNav.map((item) => [item.to, { title: item.label }])),
   "/import": { title: "Import CSV" },
   "/add-transaction": { title: "Transactions" },
   "/transfer": { title: "Transactions" },
   "/transfers/review": { title: "Transactions" },
   "/recurring": { title: "Recurring charges" },
-  "/net-worth": { title: "Net worth" },
-  "/connections": { title: "Connections" },
+  "/churning": { title: "Churning" },
 };
 
 export default function AppLayout() {
@@ -44,14 +41,22 @@ export default function AppLayout() {
   }, [meta.title]);
 
   return (
-    <div className="flex min-h-svh flex-col bg-background">
-      <TopAppBar />
-      <main className="page-container flex-1 pb-28 pt-2 md:pb-10">
-        <PageTransition key={location.pathname}>
-          <Outlet />
-        </PageTransition>
-      </main>
-      <BottomNavBar />
+    <div className="min-h-svh bg-background">
+      {/* Persistent sidebar rail on desktop; the TopAppBar hamburger opens the
+          slide-over version on mobile. */}
+      <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 border-r border-border/60 bg-background md:block">
+        <SidebarContent />
+      </aside>
+
+      <div className="md:pl-64">
+        <TopAppBar />
+        <InstallBanner />
+        <main className="page-container flex-1 pb-10 pt-2">
+          <PageTransition key={location.pathname}>
+            <Outlet />
+          </PageTransition>
+        </main>
+      </div>
     </div>
   );
 }

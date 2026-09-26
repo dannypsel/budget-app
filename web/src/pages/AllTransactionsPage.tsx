@@ -8,7 +8,9 @@
 
 import { createElement, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { ArrowUpRight, ChevronLeft, Download, Filter, RotateCcw, Search, WandSparkles, X } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
+import { ArrowUpRight, ChevronLeft, Download, Filter, RotateCcw, Search, Upload, WandSparkles, X } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   DropdownMenu,
@@ -22,9 +24,10 @@ import { ErrorState } from '@/components/ErrorState'
 import { TransfersTab } from '@/features/transactions/TransfersTab'
 import { CategorizeReview } from '@/features/transactions/CategorizeReview'
 import { CategoryPickerDialog } from '@/components/finance/CategoryPickerDialog'
+import CsvImportDialog from '@/components/finance/CsvImportDialog'
+import { autoCategorize } from '@/data/aiCategorize'
 import { BulkCategorizePrompt, type BulkPrompt } from '@/components/finance/BulkCategorizePrompt'
 import { ProgressBar } from '@/components/finance/ProgressBar'
-import { SavedViewsMenu } from '@/components/finance/SavedViewsMenu'
 import { iconForSymbol } from '@/lib/iconMap'
 import { categoryTint, categorySeriesColor } from '@/lib/categoryColors'
 import { CountUp } from '@/lib/motion'
@@ -35,7 +38,6 @@ import {
   useRecurringSeries,
   useSetCategory,
   useSpendByCategory,
-  useTags,
   useTransactionSearch,
   useTransactionsMonthAll,
   useUncategorized,
@@ -51,7 +53,6 @@ import {
   merchantKey,
   sumIncome,
   sumNetSpend,
-  txnTags,
   type Transaction,
   type UUID,
 } from '@/types/domain'
@@ -305,7 +306,6 @@ export default function AllTransactionsPage() {
   const { data: txns = [], isLoading } = monthQuery
   const { data: uncategorized = [] } = useUncategorized(month)
   const { data: categories = [] } = useCategories()
-  const { data: tags = [] } = useTags()
   const { data: accountsList = [] } = useAccounts()
   const setCategory = useSetCategory()
   const bulkCategorize = useBulkCategorizeMerchant()
@@ -319,14 +319,45 @@ export default function AllTransactionsPage() {
   const [selected, setSelected] = useState<Transaction | null>(null)
   const [bulkPrompt, setBulkPrompt] = useState<BulkPrompt | null>(null)
   const [reviewOpen, setReviewOpen] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
+  const [autoRunning, setAutoRunning] = useState(false)
+  const qc = useQueryClient()
+
+  /** On-demand AI categorization: classifies whatever rules/memory couldn't.
+   *  Best-effort — a backend hiccup toasts instead of breaking the page. */
+  async function runAutoCategorize() {
+    setAutoRunning(true)
+    try {
+      const stats = await autoCategorize()
+      if (!stats) {
+        toast.error('Could not reach the backend')
+        return
+      }
+      if (stats.status === 'disabled') toast('AI categorization is disabled')
+      else if (stats.status === 'misconfigured')
+        toast.error('AI provider misconfigured — check the backend API key')
+      else {
+        await qc.invalidateQueries({ queryKey: ['sb'] })
+        toast.success(
+          `Checked ${stats.checked}: ${stats.rules_applied} by rules, ` +
+            `${stats.from_cache} cached, ${stats.ai_applied} by AI, ` +
+            `${stats.needs_review} need review`,
+        )
+      }
+    } catch {
+      toast.error('Auto-categorization failed')
+    } finally {
+      setAutoRunning(false)
+    }
+  }
   const [filterIds, setFilterIds] = useState<Set<UUID>>(new Set())
-  const [tagFilterIds, setTagFilterIds] = useState<Set<UUID>>(new Set())
   const [hiddenOnly, setHiddenOnly] = useState(false)
 
   // Search spans all months (server-side, search_transactions RPC). While a query is
   // active the list operates on the results instead of the month, and the month chips +
   // month-scoped sidebar hide (results are capped at the newest 50 matches).
-  const [searchText, setSearchText] = useState('')
+  // Seedable via ?q= so other pages (e.g. credit auto-detection) can deep-link here.
+  const [searchText, setSearchText] = useState(() => searchParams.get('q') ?? '')
   const debouncedQuery = useDebouncedValue(searchText)
   const searching = searchText.trim().length > 0
   const search = useTransactionSearch(debouncedQuery)
@@ -344,24 +375,22 @@ export default function AllTransactionsPage() {
     return { counted, spent: sumNetSpend(counted), income: sumIncome(counted) }
   }, [txns])
 
-  const filterCount = filterIds.size + tagFilterIds.size + (hiddenOnly ? 1 : 0)
+  const filterCount = filterIds.size + (hiddenOnly ? 1 : 0)
 
   // The search RPC caps its result at SEARCH_LIMIT rows, and the category/tag filters
   // below run over only that set — so a capped result filters an incomplete list. Flag
   // it (raw pre-filter count) so the truncation isn't silent.
   const searchTruncated = searching && (search.data?.length ?? 0) >= SEARCH_LIMIT
 
-  // Text matching is server-side; here we only apply the category/tag/hidden filters
+  // Text matching is server-side; here we only apply the category/hidden filters
   // over the active set (month rows, or search results while searching).
   const filtered = useMemo(() => {
     return activeTxns.filter((t) => {
       if (hiddenOnly && !t.hidden) return false
       if (filterIds.size > 0 && !(t.category_id && filterIds.has(t.category_id))) return false
-      if (tagFilterIds.size > 0 && !txnTags(t).some((tag) => tagFilterIds.has(tag.id)))
-        return false
       return true
     })
-  }, [activeTxns, filterIds, tagFilterIds, hiddenOnly])
+  }, [activeTxns, filterIds, hiddenOnly])
 
   // Month filter chips — most recent first, extendable via the "Earlier" button.
   const monthOptions = useMemo(() => {
@@ -408,15 +437,35 @@ export default function AllTransactionsPage() {
           <h1 className="text-2xl font-semibold text-foreground md:text-[2rem] md:leading-10">
             Transactions
           </h1>
+          <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void runAutoCategorize()}
+            disabled={autoRunning}
+            title="Classify uncategorized transactions with AI (rules and merchant memory apply first)"
+            className="flex items-center gap-2 rounded-full border border-border bg-card px-4 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-surface-container-high focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50"
+          >
+            <WandSparkles aria-hidden="true" className="h-4 w-4" />
+            <span className="hidden sm:inline">{autoRunning ? 'Categorizing…' : 'Auto-categorize'}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setImportOpen(true)}
+            className="flex items-center gap-2 rounded-full border border-border bg-card px-4 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-surface-container-high focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          >
+            <Upload aria-hidden="true" className="h-4 w-4" />
+            <span className="hidden sm:inline">Import CSV</span>
+          </button>
           <button
             type="button"
             onClick={exportCsv}
             disabled={filtered.length === 0}
-            className="flex shrink-0 items-center gap-2 rounded-full border border-border bg-card px-4 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-surface-container-high focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50"
+            className="flex items-center gap-2 rounded-full border border-border bg-card px-4 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-surface-container-high focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50"
           >
             <Download aria-hidden="true" className="h-4 w-4" />
             <span className="hidden sm:inline">Export CSV</span>
           </button>
+          </div>
         </div>
 
         {/* Search + filters (sticky on mobile, under the 72px top app bar) */}
@@ -480,37 +529,8 @@ export default function AllTransactionsPage() {
                     {c.name}
                   </DropdownMenuCheckboxItem>
                 ))}
-                {tags.length > 0 && (
-                  <>
-                    <DropdownMenuLabel>Tags</DropdownMenuLabel>
-                    {tags.map((t) => (
-                      <DropdownMenuCheckboxItem
-                        key={t.id}
-                        checked={tagFilterIds.has(t.id)}
-                        onCheckedChange={(v) =>
-                          setTagFilterIds((prev) => {
-                            const next = new Set(prev)
-                            if (v) next.add(t.id)
-                            else next.delete(t.id)
-                            return next
-                          })
-                        }
-                      >
-                        {t.name}
-                      </DropdownMenuCheckboxItem>
-                    ))}
-                  </>
-                )}
               </DropdownMenuContent>
             </DropdownMenu>
-            <SavedViewsMenu
-              categoryIds={filterIds}
-              tagIds={tagFilterIds}
-              onApply={(params) => {
-                setFilterIds(new Set(params.categoryIds))
-                setTagFilterIds(new Set(params.tagIds))
-              }}
-            />
           </div>
 
           {/* Month chips — hidden while searching (results span all months) */}
@@ -645,6 +665,12 @@ export default function AllTransactionsPage() {
           onOpenChange={setReviewOpen}
         />
       )}
+
+      <CsvImportDialog
+        open={importOpen}
+        accounts={accountsList}
+        onOpenChange={setImportOpen}
+      />
     </div>
   )
 }

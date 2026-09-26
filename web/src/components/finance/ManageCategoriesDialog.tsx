@@ -1,8 +1,8 @@
 // Create / rename / recolor / re-icon / delete categories — the web counterpart of iOS
-// CategoryEditSheet + CategoryListView, in the inline-row style of ManageTagsDialog.
-// Rename saves on blur or Enter; the color swatch cycles the palette; clicking the icon
-// tile expands an icon grid for that row. Deleting cascades budgets/ZBB/split rows and
-// leaves the category's transactions uncategorized, so it confirms first.
+// CategoryEditSheet + CategoryListView. Rename saves on blur or Enter; the color swatch
+// cycles the palette; clicking the icon tile expands an icon grid for that row. Deleting
+// cascades its budgets and leaves the category's transactions uncategorized, so it
+// confirms first.
 
 import { useRef, useState } from 'react'
 import { GripVertical, Plus, Trash2 } from 'lucide-react'
@@ -15,7 +15,6 @@ import {
   useDeleteCategory,
   useReorderCategories,
   useUpsertCategory,
-  useUpsertTag,
 } from '@/data/hooks'
 import { categoryHasSplits } from '@/data/categories'
 import { TAG_PALETTE } from '@/lib/tagColors'
@@ -29,7 +28,7 @@ function moveItem<T>(arr: T[], from: number, to: number): T[] {
   return next
 }
 
-// Same input/focus recipe as ManageTagsDialog (search-input focus ring).
+// Same input/focus recipe as the other Manage* dialogs (search-input focus ring).
 const inputClass =
   'flex-1 rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary'
 
@@ -45,13 +44,9 @@ export function ManageCategoriesDialog({
 }) {
   const { data: categories = [] } = useCategories()
   const upsert = useUpsertCategory()
-  const upsertTag = useUpsertTag()
   const del = useDeleteCategory()
   const reorder = useReorderCategories()
   const [newName, setNewName] = useState('')
-  // The add-row can create a category (name + color + icon) or a free-form tag (name +
-  // color only), mirroring the Category/Tag toggle on iOS's budget new-category modal.
-  const [addMode, setAddMode] = useState<'category' | 'tag'>('category')
   const [iconPickerFor, setIconPickerFor] = useState<string | null>(null)
 
   // Drag/keyboard reorder keeps only the ORDER (a list of ids) as local state; the rows
@@ -110,15 +105,7 @@ export function ManageCategoriesDialog({
     const name = newName.trim()
     if (!name) return
     const color = TAG_PALETTE[categories.length % TAG_PALETTE.length]
-    if (addMode === 'tag') {
-      // Tags are name + color only — no icon, no budget, no sort order.
-      upsertTag.mutate(
-        { name, color },
-        { onError: () => toast.error(`Couldn't create tag "${name}". Please try again.`) },
-      )
-    } else {
-      upsert.mutate({ name, color, icon: 'tag.fill', sort_order: categories.length })
-    }
+    upsert.mutate({ name, color, icon: 'tag.fill', sort_order: categories.length })
     setNewName('')
   }
 
@@ -257,30 +244,12 @@ export function ManageCategoriesDialog({
 
         {/* Pinned footer — always visible, never scrolls away */}
         <div className="shrink-0 space-y-2 border-t border-border/40 pt-3">
-          {/* Category / Tag toggle — tags are name + color only (no icon, no budget). */}
-          <div className="inline-flex gap-1 rounded-full bg-surface-container p-1">
-            {(['category', 'tag'] as const).map((m) => (
-              <button
-                key={m}
-                type="button"
-                onClick={() => setAddMode(m)}
-                aria-pressed={addMode === m}
-                className={`rounded-full px-3 py-1 text-xs font-medium capitalize transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary motion-reduce:transition-none ${
-                  addMode === m
-                    ? 'bg-primary text-primary-foreground'
-                    : 'text-muted-foreground hover:text-foreground'
-                }`}
-              >
-                {m}
-              </button>
-            ))}
-          </div>
           <div className="flex gap-2">
             <input
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && addCategory()}
-              placeholder={addMode === 'tag' ? 'New tag…' : 'New category…'}
+              placeholder="New category…"
               className={inputClass}
             />
             <button

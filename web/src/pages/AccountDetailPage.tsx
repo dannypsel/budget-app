@@ -20,6 +20,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { CountUp } from '@/lib/motion'
 import {
   useAccountsWithBalance,
+  useChurnCards,
   useDeleteAccount,
   useLatestBalance,
   usePatchAccountType,
@@ -52,6 +53,7 @@ export default function AccountDetailPage() {
   const { data: accounts, isLoading: accountsLoading } = useAccountsWithBalance()
   const { data: latestBalance } = useLatestBalance(id)
   const { data: transactions = [], isLoading: txnsLoading } = useTransactionsByAccount(id)
+  const { data: churnCards = [] } = useChurnCards()
 
   const patchType = usePatchAccountType()
   const deleteAccount = useDeleteAccount()
@@ -81,6 +83,11 @@ export default function AccountDetailPage() {
   const availableDiffers =
     available != null && balance != null && Math.abs(available - balance) > 0.005
   const isLiability = isLiabilityType(account.type)
+  // A credit account linked to a churning card gets a shortcut to the tracker.
+  const linkedChurnCard =
+    account.type === 'credit'
+      ? (churnCards.find((c) => c.account_id === account.id) ?? null)
+      : null
 
   async function handleDelete() {
     setConfirmOpen(false)
@@ -122,7 +129,7 @@ export default function AccountDetailPage() {
         >
           <Link to="/accounts">
             <ArrowLeft className="h-4 w-4 mr-2" />
-            Balances
+            Accounts
           </Link>
         </Button>
 
@@ -204,6 +211,15 @@ export default function AccountDetailPage() {
             </Button>
           </div>
         </div>
+
+        {/* Churning tracker link — credit accounts linked to a tracked card only. */}
+        {linkedChurnCard && (
+          <div className="mb-8">
+            <Button variant="outline" asChild>
+              <Link to={`/churning/${linkedChurnCard.id}`}>View in churning tracker</Link>
+            </Button>
+          </div>
+        )}
 
         {/* Transactions */}
         <h2 className="text-xl font-medium text-foreground mb-4">Transactions</h2>

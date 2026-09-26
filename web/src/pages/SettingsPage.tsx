@@ -1,37 +1,51 @@
-// Settings — signed-in email, linked banks, add bank (Plaid), manual sync, sign out.
-// Mirrors PocketLens/Views/Settings/SettingsView.swift + AccountLinking.swift.
-// Terracotta/sage redesign.
+// Settings — minimal Simplifi-style list: six sections (General, Accounts,
+// Categories, Rules, Notifications, Data), each a list row that opens a simple
+// sub-view, plus the delete-account danger row at the bottom. The backend
+// Plaid Link tab / PLAID_LINK_SUCCESS message-listener flow is preserved from
+// the previous page (don't reinvent it). Deliberately excluded: tags,
+// recurring-series management, dashboard customization, investments/net worth.
 
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
-import { useQueryClient } from '@tanstack/react-query'
 import {
-  Activity,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  Archive,
+  ArrowLeft,
+  Bell,
   ChevronRight,
-  History,
-  LogOut,
+  Database,
+  Download,
+  Eye,
+  EyeOff,
+  FolderCog,
+  Landmark,
   Monitor,
   Moon,
   Pencil,
   Plug,
   Plus,
-  RefreshCw,
+  Sparkles,
   Sun,
-  Tags,
   Trash2,
+  Upload,
+  User,
   UserX,
   Wand2,
 } from 'lucide-react'
 import { useTheme } from 'next-themes'
 import { toast } from 'sonner'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { InstitutionLogo } from '@/components/finance/InstitutionLogo'
-import { ManageRulesDialog } from '@/components/finance/ManageRulesDialog'
-import { ManageTagsDialog } from '@/components/finance/ManageTagsDialog'
-import { PlaidCredentialsCard } from '@/components/finance/PlaidCredentialsCard'
-import { NotificationPreferencesCard } from '@/components/finance/NotificationPreferencesCard'
-import { ZbbSettingsCard } from '@/components/finance/ZbbSettingsCard'
+import { CategoryIcon } from '@/components/finance/CategoryIcon'
 import { BackfillPromptDialog } from '@/components/finance/BackfillPromptDialog'
+import { NewAccountDialog } from '@/components/finance/NewAccountDialog'
+import { InstallAppRow } from '@/components/InstallAppRow'
 import ConfirmDialog from '@/components/ConfirmDialog'
 import {
   Dialog,
@@ -43,11 +57,40 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { useAuth } from '@/lib/auth'
-import { usePlaidItems, useBackfillAll, useSyncInProgress, useDeletePlaidItem, useMyProfile, useUpdateMyProfile, useDeleteMyAccount } from '@/data/hooks'
-import { plaidLinkUrl, plaidReconnectUrl, requestBackfill } from '@/data/sync'
+import { autoCategorize, fetchCategorizeStatus } from '@/data/aiCategorize'
+import {
+  sbKeys,
+  usePlaidItems,
+  useDeletePlaidItem,
+  useMyProfile,
+  useUpdateMyProfile,
+  useDeleteMyAccount,
+  useCategories,
+  useRules,
+  useAccounts,
+} from '@/data/hooks'
+import * as accts from '@/data/accounts'
+import * as cats from '@/data/categories'
+import {
+  fetchMerchantMemory,
+  forgetMerchant,
+  fetchTransactionsRange,
+} from '@/data/transactions'
+import { plaidLinkUrl, plaidReconnectUrl } from '@/data/sync'
 import { openWarmTab, isTrustedMessageOrigin } from '@/data/backend'
 import { formatShortDate } from '@/lib/dates'
+import { setDefaultCurrency } from '@/lib/money'
+import { transactionsToCsv, downloadCsv } from '@/lib/exportCsv'
+import type { Account, Category, CategoryRule, RuleDirection } from '@/types/domain'
 import { cn } from '@/lib/utils'
 
 const focusRing =
@@ -102,107 +145,68 @@ function SettingsRow({
   )
 }
 
-const THEME_OPTIONS = [
-  { value: 'light', label: 'Light', Icon: Sun },
-  { value: 'dark', label: 'Dark', Icon: Moon },
-  { value: 'system', label: 'System', Icon: Monitor },
-] as const
-
-const emptySubscribe = () => () => {}
-
-/** Light / Dark / System tiles wired to next-themes. */
-function AppearanceCard() {
-  const { theme, setTheme } = useTheme()
-  // next-themes only knows the stored theme on the client — render selection after
-  // hydration (client snapshot true, server snapshot false) to avoid a mismatch flash.
-  const mounted = useSyncExternalStore(
-    emptySubscribe,
-    () => true,
-    () => false,
-  )
-
+/** Sub-view shell: back button + title, then the section content. */
+function SectionView({
+  title,
+  onBack,
+  children,
+}: {
+  title: string
+  onBack: () => void
+  children: ReactNode
+}) {
   return (
-    <section className="card-surface p-6">
-      <h3 className="mb-4 text-xl font-medium leading-7 text-foreground">Appearance</h3>
-      <div className="grid grid-cols-3 gap-4" role="group" aria-label="Theme">
-        {THEME_OPTIONS.map(({ value, label, Icon }) => {
-          const selected = mounted && theme === value
-          return (
-            <button
-              key={value}
-              type="button"
-              aria-pressed={selected}
-              onClick={() => setTheme(value)}
-              className={cn(
-                'flex min-h-[44px] flex-col items-center justify-center gap-2 rounded-lg border-2 p-4 transition-colors motion-reduce:transition-none',
-                selected
-                  ? 'border-primary bg-card text-primary'
-                  : 'border-outline-variant/60 bg-surface-container-high text-muted-foreground hover:bg-surface-variant',
-                focusRing,
-              )}
-            >
-              <Icon aria-hidden className="h-6 w-6" />
-              <span className="text-sm font-medium">{label}</span>
-            </button>
-          )
-        })}
+    <div className="pt-4 md:pt-6">
+      <div className="mb-4 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={onBack}
+          aria-label="Back to Settings"
+          className={cn(
+            'flex h-10 w-10 items-center justify-center rounded-full text-foreground transition-colors hover:bg-surface-variant motion-reduce:transition-none',
+            focusRing,
+          )}
+        >
+          <ArrowLeft aria-hidden className="h-5 w-5" />
+        </button>
+        <h2 className="text-2xl font-semibold leading-8 text-foreground">{title}</h2>
       </div>
-    </section>
+      {children}
+    </div>
   )
 }
+
+type Section = 'general' | 'accounts' | 'categories' | 'rules' | 'ai' | 'notifications' | 'data'
+
+const SECTIONS: { id: Section; label: string; Icon: typeof User }[] = [
+  { id: 'general', label: 'General', Icon: User },
+  { id: 'accounts', label: 'Accounts', Icon: Landmark },
+  { id: 'categories', label: 'Categories', Icon: FolderCog },
+  { id: 'rules', label: 'Rules', Icon: Wand2 },
+  { id: 'ai', label: 'AI Categorization', Icon: Sparkles },
+  { id: 'notifications', label: 'Notifications', Icon: Bell },
+  { id: 'data', label: 'Data', Icon: Database },
+]
 
 export default function SettingsPage() {
   const { user, signOut } = useAuth()
   const { data: banks = [] } = usePlaidItems()
-  const [tagsOpen, setTagsOpen] = useState(false)
-  const [rulesOpen, setRulesOpen] = useState(false)
+  const [section, setSection] = useState<Section | null>(null)
   const [searchParams] = useSearchParams()
-  const navigate = useNavigate()
   const queryClient = useQueryClient()
-  // ?setup=1 (fresh signup, via AppLayout): spotlight the bank-setup wizard.
-  const highlightSetup = searchParams.get('setup') === '1'
 
-  const fullSync = useBackfillAll()
-  const syncing = useSyncInProgress()
-  const deleteItem = useDeletePlaidItem()
-  // Confirm before a full sync — it's heavy and cooldown-gated (see useBackfillAll).
-  const [confirmFullSync, setConfirmFullSync] = useState(false)
+  // ?setup=1 (fresh signup via the manual-account dialog, or AppLayout): drop
+  // straight into the Accounts section where the Plaid Link flow lives.
+  useEffect(() => {
+    if (searchParams.get('setup') === '1') setSection('accounts')
+  }, [searchParams])
 
-  // Track which item is currently being backfilled (loading state).
-  const [backfillingItemId, setBackfillingItemId] = useState<string | null>(null)
-
-  async function handleBackfill(itemId: string, bankName: string) {
-    setBackfillingItemId(itemId)
-    try {
-      await requestBackfill(itemId)
-      toast.success(`Full history sync started for ${bankName}`)
-      // Invalidate relevant queries after a brief delay to allow the backend to start processing.
-      setTimeout(() => {
-        void queryClient.invalidateQueries({ queryKey: ['sb', 'accounts'] })
-        void queryClient.invalidateQueries({ queryKey: ['sb', 'transactions'] })
-      }, 2000)
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Could not request backfill')
-    } finally {
-      setBackfillingItemId(null)
-    }
-  }
-
-  // Bank to confirm deletion — holds the full PlaidItem so we can show its name.
-  const [confirmDeleteBank, setConfirmDeleteBank] = useState<{
-    id: string
-    name: string
-  } | null>(null)
-
+  // ── Plaid Link tab flow (preserved verbatim from the previous page) ──────
   const messageListenerRef = useRef<((e: MessageEvent) => void) | null>(null)
   const [backfillItem, setBackfillItem] = useState<{
     itemId: string
     institutionName: string
   } | null>(null)
-
-  // Delete-account confirmation — 3-step flow (explanation → impact → slider).
-  const [confirmDeleteAccountOpen, setConfirmDeleteAccountOpen] = useState(false)
-  const [deleteAccountStep, setDeleteAccountStep] = useState<1 | 2 | 3>(1)
 
   // Clean up any dangling message listener when the component unmounts.
   useEffect(() => {
@@ -270,278 +274,67 @@ export default function SettingsPage() {
     void openPlaidTab(() => plaidReconnectUrl(itemId), 'Could not open Plaid Link')
   }
 
-  const { data: profile } = useMyProfile()
-  const updateProfile = useUpdateMyProfile()
+  // ── Delete account (3-step confirm; useDeleteMyAccount must not regress) ──
   const deleteMyAccount = useDeleteMyAccount()
+  const [confirmDeleteAccountOpen, setConfirmDeleteAccountOpen] = useState(false)
+  const [deleteAccountStep, setDeleteAccountStep] = useState<1 | 2 | 3>(1)
+
   const email = user?.email ?? ''
-  const fullName = [profile?.first_name, profile?.last_name]
-    .filter((s) => s && s.trim().length > 0)
-    .join(' ')
-    .trim()
-  // Prefer the name's first letter for the avatar; fall back to the email.
-  const initial = (fullName || email).charAt(0).toUpperCase() || '?'
 
-  const [editNameOpen, setEditNameOpen] = useState(false)
-  const [editFirstName, setEditFirstName] = useState('')
-  const [editLastName, setEditLastName] = useState('')
-
-  function openEditName() {
-    setEditFirstName(profile?.first_name ?? '')
-    setEditLastName(profile?.last_name ?? '')
-    setEditNameOpen(true)
-  }
-
-  async function saveEditName() {
-    const firstName = editFirstName.trim() || null
-    const lastName = editLastName.trim() || null
-    await updateProfile.mutateAsync({ first_name: firstName, last_name: lastName })
-    setEditNameOpen(false)
-    toast.success('Name updated')
-  }
+  if (section === 'general')
+    return <GeneralSection onBack={() => setSection(null)} />
+  if (section === 'accounts')
+    return (
+      <AccountsSection
+        onBack={() => setSection(null)}
+        addBank={addBank}
+        reconnectBank={reconnectBank}
+      />
+    )
+  if (section === 'categories') return <CategoriesSection onBack={() => setSection(null)} />
+  if (section === 'rules') return <RulesSection onBack={() => setSection(null)} />
+  if (section === 'ai') return <AiSection onBack={() => setSection(null)} />
+  if (section === 'notifications')
+    return <NotificationsSection onBack={() => setSection(null)} />
+  if (section === 'data') return <DataSection onBack={() => setSection(null)} />
 
   return (
     <div className="space-y-6 pt-4 md:pt-6">
-      {/* Profile card */}
-      <section className="flex items-center justify-between gap-4 card-surface p-6">
-        <div className="flex min-w-0 items-center gap-6">
-          <span
-            aria-hidden
-            className="flex h-20 w-20 shrink-0 items-center justify-center rounded-full bg-surface-container text-3xl font-semibold text-primary"
-          >
-            {initial}
-          </span>
-          <div className="min-w-0">
-            <h2 className="truncate text-2xl font-semibold leading-8 text-foreground">
-              {fullName || email || 'Signed in'}
-            </h2>
-            {fullName && email && (
-              <p className="truncate text-sm text-muted-foreground">{email}</p>
-            )}
-            {banks.length > 0 && (
-              <span className="mt-1 inline-flex items-center rounded-full bg-secondary/10 px-3 py-1 text-xs font-semibold tracking-wide text-secondary">
-                {banks.length} {banks.length === 1 ? 'bank' : 'banks'} linked
-              </span>
-            )}
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <button
-            type="button"
-            aria-label="Edit name"
-            onClick={openEditName}
-            className={cn(
-              'flex h-10 w-10 items-center justify-center rounded-full bg-surface-variant text-primary transition-colors hover:bg-surface-container-high motion-reduce:transition-none',
-              focusRing,
-            )}
-          >
-            <Pencil aria-hidden className="h-4 w-4" />
-          </button>
-          <button
-            type="button"
-            aria-label="Full sync all banks"
-            onClick={() => setConfirmFullSync(true)}
-            disabled={fullSync.isPending || syncing}
-            className={cn(
-              'flex h-10 shrink-0 items-center gap-2 rounded-full bg-surface-variant px-4 text-sm font-semibold text-primary transition-colors hover:bg-surface-container-high disabled:opacity-60 motion-reduce:transition-none',
-              focusRing,
-            )}
-          >
-            <RefreshCw aria-hidden className={cn('h-4 w-4', (fullSync.isPending || syncing) && 'animate-spin')} />
-            {syncing ? 'Syncing…' : 'Full sync'}
-          </button>
+      <div>
+        <h1 className="text-2xl font-semibold leading-8 text-foreground">Settings</h1>
+        {email && <p className="mt-1 text-sm text-muted-foreground">Signed in as {email}</p>}
+      </div>
+
+      <section className="card-surface p-2 md:p-3" aria-label="Settings sections">
+        <div className="space-y-1">
+          {SECTIONS.map(({ id, label, Icon }) => (
+            <SettingsRow
+              key={id}
+              icon={<Icon aria-hidden className="h-5 w-5" />}
+              label={label}
+              meta={
+                id === 'accounts' && banks.length > 0
+                  ? `${banks.length} linked`
+                  : undefined
+              }
+              onClick={() => setSection(id)}
+            />
+          ))}
         </div>
       </section>
 
-      <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-        {/* Left column */}
-        <div className="space-y-6">
-          <section className="card-surface p-6">
-            <h3 className="mb-4 text-xl font-medium leading-7 text-foreground">Linked Banks</h3>
-            <div className="space-y-1">
-              {banks.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
-                  No banks linked yet.
-                </div>
-              ) : (
-                banks.map((b) => (
-                  <div key={b.id} className="flex items-center gap-4 rounded-lg p-4">
-                    {/* InstitutionLogo draws its own circular well — don't nest another. */}
-                    <InstitutionLogo logo={b.institution_logo} className="h-10 w-10 shrink-0" />
-                    <span className="min-w-0 flex-1 truncate text-lg leading-7 text-foreground">
-                      {b.institution_name ?? 'Bank'}
-                    </span>
-                    {b.last_synced_at && (
-                      <span className="text-xs font-semibold text-muted-foreground">
-                        Synced {formatShortDate(b.last_synced_at)}
-                      </span>
-                    )}
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <button
-                          type="button"
-                          aria-label={`Sync full history for ${b.institution_name ?? 'bank'}`}
-                          disabled={backfillingItemId === b.id}
-                          onClick={() => void handleBackfill(b.id, b.institution_name ?? 'Bank')}
-                          className={cn(
-                            'ml-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary disabled:opacity-60 motion-reduce:transition-none',
-                            focusRing,
-                          )}
-                        >
-                          <History
-                            aria-hidden
-                            className={cn('h-4 w-4', backfillingItemId === b.id && 'animate-spin')}
-                          />
-                        </button>
-                      </TooltipTrigger>
-                      <TooltipContent side="top">
-                        <p>Sync full history</p>
-                      </TooltipContent>
-                    </Tooltip>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <button
-                          type="button"
-                          aria-label={`Reconnect ${b.institution_name ?? 'bank'}`}
-                          title="Reconnect"
-                          onClick={() => reconnectBank(b.id)}
-                          className={cn(
-                            'ml-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary motion-reduce:transition-none',
-                            focusRing,
-                          )}
-                        >
-                          <Plug aria-hidden className="h-4 w-4" />
-                        </button>
-                      </TooltipTrigger>
-                      <TooltipContent side="top">
-                        <p>Reconnect</p>
-                      </TooltipContent>
-                    </Tooltip>
-                    <button
-                      type="button"
-                      aria-label={`Unlink ${b.institution_name ?? 'bank'}`}
-                      onClick={() =>
-                        setConfirmDeleteBank({ id: b.id, name: b.institution_name ?? 'this bank' })
-                      }
-                      className={cn(
-                        'ml-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive motion-reduce:transition-none',
-                        focusRing,
-                      )}
-                    >
-                      <Trash2 aria-hidden className="h-4 w-4" />
-                    </button>
-                  </div>
-                ))
-              )}
-              <SettingsRow
-                icon={<Plus aria-hidden className="h-5 w-5" />}
-                label="Add a bank"
-                onClick={addBank}
-              />
-            </div>
-          </section>
+      <section className="card-surface p-2 md:p-3" aria-label="Danger zone">
+        <SettingsRow
+          icon={<UserX aria-hidden className="h-5 w-5" />}
+          label="Delete account"
+          onClick={() => {
+            setDeleteAccountStep(1)
+            setConfirmDeleteAccountOpen(true)
+          }}
+          destructive
+        />
+      </section>
 
-          <PlaidCredentialsCard highlight={highlightSetup} />
-
-          <section className="card-surface p-6">
-            <h3 className="mb-4 text-xl font-medium leading-7 text-foreground">More</h3>
-            <div className="space-y-1">
-              <SettingsRow
-                icon={<Activity aria-hidden className="h-5 w-5" />}
-                label="Activity"
-                onClick={() => navigate('/activity')}
-              />
-              <SettingsRow
-                icon={<Tags aria-hidden className="h-5 w-5" />}
-                label="Manage tags"
-                onClick={() => setTagsOpen(true)}
-              />
-              <SettingsRow
-                icon={<Wand2 aria-hidden className="h-5 w-5" />}
-                label="Auto Classify"
-                onClick={() => setRulesOpen(true)}
-              />
-              <SettingsRow
-                icon={<LogOut aria-hidden className="h-5 w-5" />}
-                label="Sign out"
-                onClick={() => void signOut()}
-                destructive
-              />
-              <SettingsRow
-                icon={<UserX aria-hidden className="h-5 w-5" />}
-                label="Delete account"
-                onClick={() => {
-                  setDeleteAccountStep(1)
-                  setConfirmDeleteAccountOpen(true)
-                }}
-                destructive
-              />
-            </div>
-          </section>
-        </div>
-
-        {/* Right column */}
-        <div className="space-y-6">
-          <AppearanceCard />
-
-          <NotificationPreferencesCard />
-
-          <ZbbSettingsCard />
-        </div>
-      </div>
-
-      <ManageTagsDialog open={tagsOpen} onOpenChange={setTagsOpen} />
-      <ManageRulesDialog open={rulesOpen} onOpenChange={setRulesOpen} />
-
-      {/* Edit name dialog */}
-      <Dialog open={editNameOpen} onOpenChange={(o) => !updateProfile.isPending && setEditNameOpen(o)}>
-        <DialogContent className="sm:max-w-sm">
-          <DialogHeader>
-            <DialogTitle>Edit name</DialogTitle>
-          </DialogHeader>
-          <form
-            id="edit-name-form"
-            className="space-y-4 py-2"
-            onSubmit={(e) => { e.preventDefault(); void saveEditName() }}
-          >
-            <div className="space-y-1.5">
-              <Label htmlFor="edit-first-name">First name</Label>
-              <Input
-                id="edit-first-name"
-                value={editFirstName}
-                onChange={(e) => setEditFirstName(e.target.value)}
-                autoComplete="given-name"
-                autoFocus
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="edit-last-name">Last name</Label>
-              <Input
-                id="edit-last-name"
-                value={editLastName}
-                onChange={(e) => setEditLastName(e.target.value)}
-                autoComplete="family-name"
-              />
-            </div>
-          </form>
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => setEditNameOpen(false)}
-              disabled={updateProfile.isPending}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="submit"
-              form="edit-name-form"
-              disabled={updateProfile.isPending}
-            >
-              {updateProfile.isPending ? 'Saving…' : 'Save'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
       {backfillItem && (
         <BackfillPromptDialog
           open={!!backfillItem}
@@ -550,34 +343,6 @@ export default function SettingsPage() {
           onClose={() => setBackfillItem(null)}
         />
       )}
-      <ConfirmDialog
-        open={confirmFullSync}
-        title="Full sync all banks?"
-        message={`This re-imports the full transaction history (up to 730 days) for all ${banks.length} linked ${banks.length === 1 ? 'bank' : 'banks'}. It can take a few minutes and is limited to once every couple of days.\n\nFor a quick update of recent transactions and balances, use the Sync button on the Balances tab instead.`}
-        confirmLabel="Start full sync"
-        onConfirm={() => {
-          fullSync.mutate()
-          setConfirmFullSync(false)
-        }}
-        onCancel={() => setConfirmFullSync(false)}
-      />
-
-      <ConfirmDialog
-        open={!!confirmDeleteBank}
-        title={`Unlink ${confirmDeleteBank?.name ?? 'bank'}?`}
-        message={`This permanently removes your ${confirmDeleteBank?.name ?? 'bank'} connection and deletes ALL accounts and transactions imported from it — checking, savings, credit cards, and any other accounts under that login. This cannot be undone.\n\nTo hide just one account while keeping the others, use the delete button on individual accounts in the Balances tab.`}
-        confirmLabel="Unlink & delete everything"
-        onConfirm={() => {
-          if (!confirmDeleteBank) return
-          toast.promise(deleteItem.mutateAsync(confirmDeleteBank.id), {
-            loading: `Unlinking ${confirmDeleteBank.name}…`,
-            success: `${confirmDeleteBank.name} unlinked`,
-            error: (e) => (e instanceof Error ? e.message : 'Could not unlink bank'),
-          })
-          setConfirmDeleteBank(null)
-        }}
-        onCancel={() => setConfirmDeleteBank(null)}
-      />
 
       {/* Delete account — 3-step: explanation → impact list → drag-to-confirm slider */}
       <DeleteAccountDialog
@@ -605,19 +370,1347 @@ export default function SettingsPage() {
   )
 }
 
-// ─── Delete Account Dialog (3-step) ────────────────────────────────────────
+// ─── General: display name, currency, theme ────────────────────────────────
+
+const CURRENCIES = ['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY']
+
+const THEME_OPTIONS = [
+  { value: 'light', label: 'Light', Icon: Sun },
+  { value: 'dark', label: 'Dark', Icon: Moon },
+  { value: 'system', label: 'System', Icon: Monitor },
+] as const
+
+const emptySubscribe = () => () => {}
+
+function GeneralSection({ onBack }: { onBack: () => void }) {
+  const { data: profile } = useMyProfile()
+  const updateProfile = useUpdateMyProfile()
+  const { theme, setTheme } = useTheme()
+  // next-themes only knows the stored theme on the client — render selection after
+  // hydration (client snapshot true, server snapshot false) to avoid a mismatch flash.
+  const mounted = useSyncExternalStore(emptySubscribe, () => true, () => false)
+
+  const [firstName, setFirstName] = useState(profile?.first_name ?? '')
+  const [lastName, setLastName] = useState(profile?.last_name ?? '')
+  const [savedName, setSavedName] = useState({
+    first: profile?.first_name ?? '',
+    last: profile?.last_name ?? '',
+  })
+  useEffect(() => {
+    const f = profile?.first_name ?? ''
+    const l = profile?.last_name ?? ''
+    setFirstName(f)
+    setLastName(l)
+    setSavedName({ first: f, last: l })
+  }, [profile?.first_name, profile?.last_name])
+
+  const nameDirty = firstName !== savedName.first || lastName !== savedName.last
+
+  async function saveName() {
+    try {
+      await updateProfile.mutateAsync({
+        first_name: firstName.trim() || null,
+        last_name: lastName.trim() || null,
+      })
+      setSavedName({ first: firstName, last: lastName })
+      toast.success('Name updated')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Could not save name')
+    }
+  }
+
+  function changeCurrency(code: string) {
+    setDefaultCurrency(code)
+    toast.promise(updateProfile.mutateAsync({ currency: code }), {
+      loading: 'Saving currency…',
+      success: `Currency set to ${code}`,
+      error: (e) => (e instanceof Error ? e.message : 'Could not save currency'),
+    })
+  }
+
+  function changeTheme(value: 'light' | 'dark' | 'system') {
+    setTheme(value)
+    // Persist server-side too so other devices (and a fresh login) pick it up.
+    void updateProfile.mutateAsync({ theme: value }).catch((e) => {
+      toast.error(e instanceof Error ? e.message : 'Could not save theme')
+    })
+  }
+
+  return (
+    <SectionView title="General" onBack={onBack}>
+      <div className="space-y-6">
+        <section className="card-surface p-6">
+          <h3 className="mb-4 text-xl font-medium leading-7 text-foreground">Display name</h3>
+          <p className="mb-4 -mt-2 text-sm text-muted-foreground">
+            Used in the dashboard greeting (e.g. &ldquo;Good morning, Dara.&rdquo;). Leave
+            blank to use the household default.
+          </p>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="settings-first-name">First name</Label>
+              <Input
+                id="settings-first-name"
+                value={firstName}
+                onChange={(e) => setFirstName(e.target.value)}
+                autoComplete="given-name"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="settings-last-name">Last name</Label>
+              <Input
+                id="settings-last-name"
+                value={lastName}
+                onChange={(e) => setLastName(e.target.value)}
+                autoComplete="family-name"
+              />
+            </div>
+          </div>
+          <div className="mt-4">
+            <Button
+              type="button"
+              onClick={() => void saveName()}
+              disabled={!nameDirty || updateProfile.isPending}
+            >
+              {updateProfile.isPending ? 'Saving…' : 'Save name'}
+            </Button>
+          </div>
+        </section>
+
+        <section className="card-surface p-6">
+          <h3 className="mb-1 text-xl font-medium leading-7 text-foreground">Currency</h3>
+          <p className="mb-4 text-sm text-muted-foreground">
+            Used everywhere amounts are shown.
+          </p>
+          <div className="max-w-xs">
+            <Label htmlFor="settings-currency" className="sr-only">
+              Currency
+            </Label>
+            <Select
+              value={profile?.currency ?? 'USD'}
+              onValueChange={(v) => changeCurrency(v)}
+              disabled={updateProfile.isPending}
+            >
+              <SelectTrigger id="settings-currency">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {CURRENCIES.map((c) => (
+                  <SelectItem key={c} value={c}>
+                    {c}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </section>
+
+        <section className="card-surface p-6">
+          <h3 className="mb-4 text-xl font-medium leading-7 text-foreground">Appearance</h3>
+          <div className="grid grid-cols-3 gap-4" role="group" aria-label="Theme">
+            {THEME_OPTIONS.map(({ value, label, Icon }) => {
+              const selected = mounted && theme === value
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={selected}
+                  onClick={() => changeTheme(value)}
+                  className={cn(
+                    'flex min-h-[44px] flex-col items-center justify-center gap-2 rounded-lg border-2 p-4 transition-colors motion-reduce:transition-none',
+                    selected
+                      ? 'border-primary bg-card text-primary'
+                      : 'border-outline-variant/60 bg-surface-container-high text-muted-foreground hover:bg-surface-variant',
+                    focusRing,
+                  )}
+                >
+                  <Icon aria-hidden className="h-6 w-6" />
+                  <span className="text-sm font-medium">{label}</span>
+                </button>
+              )
+            })}
+          </div>
+        </section>
+        <section className="card-surface p-6">
+          <h3 className="mb-1 text-xl font-medium leading-7 text-foreground">Install app</h3>
+          <p className="mb-4 text-sm text-muted-foreground">
+            Add PocketLens to your home screen for quick access.
+          </p>
+          <InstallAppRow />
+        </section>
+      </div>
+    </SectionView>
+  )
+}
+
+// ─── Accounts: Plaid items + per-account rename / hide / unhide ─────────────
+
+const iconBtn =
+  'flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary motion-reduce:transition-none'
+
+function AccountRow({
+  account,
+  editing,
+  draftName,
+  onDraftChange,
+  onStartEdit,
+  onCancelEdit,
+  onSaveEdit,
+  onToggleActive,
+  busy,
+}: {
+  account: Account
+  editing: boolean
+  draftName: string
+  onDraftChange: (v: string) => void
+  onStartEdit: () => void
+  onCancelEdit: () => void
+  onSaveEdit: () => void
+  onToggleActive: (active: boolean) => void
+  busy: boolean
+}) {
+  const meta = [
+    account.official_name,
+    account.mask ? `••${account.mask}` : null,
+    account.type,
+  ]
+    .filter(Boolean)
+    .join(' · ')
+  return (
+    <div className={cn('flex items-center gap-2 py-3', !account.is_active && 'opacity-60')}>
+      <div className="min-w-0 flex-1">
+        {editing ? (
+          <div className="flex items-center gap-2">
+            <Input
+              value={draftName}
+              onChange={(e) => onDraftChange(e.target.value)}
+              autoFocus
+              aria-label="Account name"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') onSaveEdit()
+                if (e.key === 'Escape') onCancelEdit()
+              }}
+            />
+            <Button
+              type="button"
+              size="sm"
+              onClick={onSaveEdit}
+              disabled={busy || draftName.trim().length === 0}
+            >
+              Save
+            </Button>
+            <Button type="button" size="sm" variant="ghost" onClick={onCancelEdit}>
+              Cancel
+            </Button>
+          </div>
+        ) : (
+          <>
+            <p className="truncate text-base font-medium text-foreground">{account.name}</p>
+            {(meta || !account.is_active) && (
+              <p className="truncate text-xs text-muted-foreground">
+                {meta}
+                {!account.is_active && (meta ? ' · Hidden from totals' : 'Hidden from totals')}
+              </p>
+            )}
+          </>
+        )}
+      </div>
+      {!editing && (
+        <>
+          <button
+            type="button"
+            title={account.is_active ? 'Hide from totals' : 'Show in totals'}
+            aria-label={`${account.is_active ? 'Hide' : 'Show'} ${account.name}`}
+            onClick={() => onToggleActive(!account.is_active)}
+            disabled={busy}
+            className={cn(iconBtn, focusRing, 'disabled:opacity-60')}
+          >
+            {account.is_active ? (
+              <Eye aria-hidden className="h-4 w-4" />
+            ) : (
+              <EyeOff aria-hidden className="h-4 w-4" />
+            )}
+          </button>
+          <button
+            type="button"
+            title="Rename account"
+            aria-label={`Rename ${account.name}`}
+            onClick={onStartEdit}
+            disabled={busy}
+            className={cn(iconBtn, focusRing, 'disabled:opacity-60')}
+          >
+            <Pencil aria-hidden className="h-4 w-4" />
+          </button>
+        </>
+      )}
+    </div>
+  )
+}
+
+function AccountsSection({
+  onBack,
+  addBank,
+  reconnectBank,
+}: {
+  onBack: () => void
+  addBank: () => void
+  reconnectBank: (itemId: string) => void
+}) {
+  const queryClient = useQueryClient()
+  const { data: items = [] } = usePlaidItems()
+  // Include hidden accounts so they can be unhidden here.
+  const { data: accounts = [] } = useQuery({
+    queryKey: [...sbKeys.accounts, 'all'],
+    queryFn: () => accts.fetchAccounts({ includeInactive: true }),
+  })
+  const deleteItem = useDeletePlaidItem()
+
+  const [confirmDeleteBank, setConfirmDeleteBank] = useState<{
+    id: string
+    name: string
+  } | null>(null)
+  const [manualOpen, setManualOpen] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [draftName, setDraftName] = useState('')
+
+  const invalidateAccounts = () => {
+    void queryClient.invalidateQueries({ queryKey: sbKeys.accounts })
+  }
+
+  const rename = useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) =>
+      accts.renameAccount(id, name),
+    onSuccess: () => {
+      invalidateAccounts()
+      setEditingId(null)
+      toast.success('Account renamed')
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not rename account'),
+  })
+  const setActive = useMutation({
+    mutationFn: ({ id, active }: { id: string; active: boolean }) =>
+      active ? accts.unhideAccount(id) : accts.hideAccount(id),
+    onSuccess: (_d, v) => {
+      invalidateAccounts()
+      toast.success(v.active ? 'Account shown in totals' : 'Account hidden from totals')
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not update account'),
+  })
+  const busy = rename.isPending || setActive.isPending
+
+  const accountsByItem = useMemo(() => {
+    const map = new Map<string, Account[]>()
+    for (const a of accounts) {
+      if (!a.plaid_item_id) continue
+      const list = map.get(a.plaid_item_id) ?? []
+      list.push(a)
+      map.set(a.plaid_item_id, list)
+    }
+    return map
+  }, [accounts])
+
+  function startEdit(account: Account) {
+    setEditingId(account.id)
+    setDraftName(account.name)
+  }
+  function saveEdit() {
+    if (!editingId) return
+    const name = draftName.trim()
+    if (!name) return
+    rename.mutate({ id: editingId, name })
+  }
+
+  return (
+    <SectionView title="Accounts" onBack={onBack}>
+      <div className="space-y-6">
+        {items.length === 0 ? (
+          <div className="card-surface rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
+            No banks linked yet.
+          </div>
+        ) : (
+          items.map((item) => (
+            <section key={item.id} className="card-surface p-6">
+              <div className="flex items-center gap-4">
+                <InstitutionLogo logo={item.institution_logo} className="h-10 w-10 shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <h3 className="truncate text-lg font-medium leading-7 text-foreground">
+                    {item.institution_name ?? 'Bank'}
+                  </h3>
+                  {item.last_synced_at && (
+                    <p className="text-xs text-muted-foreground">
+                      Synced {formatShortDate(item.last_synced_at)}
+                    </p>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  title="Reconnect"
+                  aria-label={`Reconnect ${item.institution_name ?? 'bank'}`}
+                  onClick={() => reconnectBank(item.id)}
+                  className={cn(iconBtn, focusRing)}
+                >
+                  <Plug aria-hidden className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  title="Disconnect"
+                  aria-label={`Disconnect ${item.institution_name ?? 'bank'}`}
+                  onClick={() =>
+                    setConfirmDeleteBank({
+                      id: item.id,
+                      name: item.institution_name ?? 'this bank',
+                    })
+                  }
+                  className={cn(
+                    iconBtn,
+                    focusRing,
+                    'hover:bg-destructive/10 hover:text-destructive',
+                  )}
+                >
+                  <Trash2 aria-hidden className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="mt-2 divide-y divide-border">
+                {(accountsByItem.get(item.id) ?? []).map((a) => (
+                  <AccountRow
+                    key={a.id}
+                    account={a}
+                    editing={editingId === a.id}
+                    draftName={draftName}
+                    onDraftChange={setDraftName}
+                    onStartEdit={() => startEdit(a)}
+                    onCancelEdit={() => setEditingId(null)}
+                    onSaveEdit={saveEdit}
+                    onToggleActive={(active) => setActive.mutate({ id: a.id, active })}
+                    busy={busy}
+                  />
+                ))}
+              </div>
+            </section>
+          ))
+        )}
+
+        <section className="card-surface p-2 md:p-3">
+          <div className="space-y-1">
+            <SettingsRow
+              icon={<Plus aria-hidden className="h-5 w-5" />}
+              label="Add a bank"
+              meta="Plaid"
+              onClick={addBank}
+            />
+            <SettingsRow
+              icon={<Pencil aria-hidden className="h-5 w-5" />}
+              label="Add manual account"
+              onClick={() => setManualOpen(true)}
+            />
+          </div>
+        </section>
+      </div>
+
+      <NewAccountDialog open={manualOpen} onOpenChange={setManualOpen} />
+
+      <ConfirmDialog
+        open={!!confirmDeleteBank}
+        title={`Disconnect ${confirmDeleteBank?.name ?? 'bank'}?`}
+        message={`This permanently removes your ${confirmDeleteBank?.name ?? 'bank'} connection and deletes ALL accounts and transactions imported from it — checking, savings, credit cards, and any other accounts under that login. This cannot be undone.\n\nTo hide just one account while keeping the others, use the eye button on the account above instead.`}
+        confirmLabel="Disconnect & delete everything"
+        onConfirm={() => {
+          if (!confirmDeleteBank) return
+          toast.promise(deleteItem.mutateAsync(confirmDeleteBank.id), {
+            loading: `Disconnecting ${confirmDeleteBank.name}…`,
+            success: `${confirmDeleteBank.name} disconnected`,
+            error: (e) => (e instanceof Error ? e.message : 'Could not disconnect bank'),
+          })
+          setConfirmDeleteBank(null)
+        }}
+        onCancel={() => setConfirmDeleteBank(null)}
+      />
+    </SectionView>
+  )
+}
+
+// ─── Categories: add / rename / archive ────────────────────────────────────
+
+const CATEGORY_PALETTE = [
+  '#34C759',
+  '#0A84FF',
+  '#FF9F0A',
+  '#FF453A',
+  '#BF5AF2',
+  '#FFD60A',
+  '#64D2FF',
+  '#98989D',
+]
+
+function CategoriesSection({ onBack }: { onBack: () => void }) {
+  const queryClient = useQueryClient()
+  const { data: categories = [] } = useCategories()
+  const [adding, setAdding] = useState(false)
+  const [name, setName] = useState('')
+  const [color, setColor] = useState(CATEGORY_PALETTE[0])
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [draftName, setDraftName] = useState('')
+
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: sbKeys.categories })
+  }
+
+  const save = useMutation({
+    mutationFn: (cat: Partial<Category> & { name: string; color: string; icon: string }) =>
+      cats.upsertCategory(cat),
+    onSuccess: () => {
+      invalidate()
+      setAdding(false)
+      setName('')
+      setColor(CATEGORY_PALETTE[0])
+      setEditingId(null)
+      toast.success('Category saved')
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not save category'),
+  })
+  const archive = useMutation({
+    mutationFn: (id: string) => cats.setCategoryActive(id, false),
+    onSuccess: () => {
+      invalidate()
+      toast.success('Category archived')
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not archive category'),
+  })
+  const busy = save.isPending || archive.isPending
+
+  function addCategory() {
+    const trimmed = name.trim()
+    if (!trimmed) return
+    save.mutate({
+      name: trimmed,
+      color,
+      icon: 'tag.fill',
+      sort_order: categories.length,
+    })
+  }
+
+  function saveRename(cat: Category) {
+    const trimmed = draftName.trim()
+    if (!trimmed) return
+    save.mutate({ id: cat.id, name: trimmed, color: cat.color, icon: cat.icon })
+  }
+
+  return (
+    <SectionView title="Categories" onBack={onBack}>
+      <div className="space-y-6">
+        <section className="card-surface p-2 md:p-3">
+          {categories.length === 0 ? (
+            <p className="px-4 py-8 text-center text-sm text-muted-foreground">
+              No categories yet.
+            </p>
+          ) : (
+            <div className="divide-y divide-border">
+              {categories.map((cat) => (
+                <div key={cat.id} className="flex items-center gap-3 px-2 py-2.5">
+                  <CategoryIcon category={cat} size={36} />
+                  <div className="min-w-0 flex-1">
+                    {editingId === cat.id ? (
+                      <div className="flex items-center gap-2">
+                        <Input
+                          value={draftName}
+                          onChange={(e) => setDraftName(e.target.value)}
+                          autoFocus
+                          aria-label="Category name"
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') saveRename(cat)
+                            if (e.key === 'Escape') setEditingId(null)
+                          }}
+                        />
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={() => saveRename(cat)}
+                          disabled={busy || draftName.trim().length === 0}
+                        >
+                          Save
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setEditingId(null)}
+                        >
+                          Cancel
+                        </Button>
+                      </div>
+                    ) : (
+                      <p className="truncate text-base font-medium text-foreground">{cat.name}</p>
+                    )}
+                  </div>
+                  {editingId !== cat.id && (
+                    <>
+                      <button
+                        type="button"
+                        title="Rename"
+                        aria-label={`Rename ${cat.name}`}
+                        onClick={() => {
+                          setEditingId(cat.id)
+                          setDraftName(cat.name)
+                        }}
+                        disabled={busy}
+                        className={cn(iconBtn, focusRing, 'disabled:opacity-60')}
+                      >
+                        <Pencil aria-hidden className="h-4 w-4" />
+                      </button>
+                      <button
+                        type="button"
+                        title="Archive category"
+                        aria-label={`Archive ${cat.name}`}
+                        onClick={() => archive.mutate(cat.id)}
+                        disabled={busy}
+                        className={cn(
+                          iconBtn,
+                          focusRing,
+                          'hover:bg-destructive/10 hover:text-destructive disabled:opacity-60',
+                        )}
+                      >
+                        <Archive aria-hidden className="h-4 w-4" />
+                      </button>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="card-surface p-6">
+          {adding ? (
+            <div className="space-y-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="new-category-name">Name</Label>
+                <Input
+                  id="new-category-name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  autoFocus
+                  placeholder="e.g. Groceries"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') addCategory()
+                  }}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Color</Label>
+                <div className="flex flex-wrap gap-2" role="group" aria-label="Category color">
+                  {CATEGORY_PALETTE.map((c) => (
+                    <button
+                      key={c}
+                      type="button"
+                      aria-label={`Color ${c}`}
+                      aria-pressed={color === c}
+                      onClick={() => setColor(c)}
+                      className={cn(
+                        'h-9 w-9 rounded-full transition-transform motion-reduce:transition-none',
+                        color === c && 'ring-2 ring-primary ring-offset-2 ring-offset-card',
+                        focusRing,
+                      )}
+                      style={{ backgroundColor: c }}
+                    />
+                  ))}
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  onClick={addCategory}
+                  disabled={busy || name.trim().length === 0}
+                >
+                  {save.isPending ? 'Adding…' : 'Add category'}
+                </Button>
+                <Button type="button" variant="ghost" onClick={() => setAdding(false)}>
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <SettingsRow
+              icon={<Plus aria-hidden className="h-5 w-5" />}
+              label="Add category"
+              onClick={() => setAdding(true)}
+            />
+          )}
+        </section>
+      </div>
+    </SectionView>
+  )
+}
+
+// ─── Rules: keyword rules + learned merchant memory ────────────────────────
+
+const DIRECTION_OPTIONS = [
+  { value: 'any', label: 'Any direction' },
+  { value: 'out', label: 'Money out' },
+  { value: 'in', label: 'Money in' },
+] as const
+
+function RuleDialog({
+  rule,
+  categories,
+  onClose,
+}: {
+  rule: CategoryRule | null // null = add
+  categories: Category[]
+  onClose: () => void
+}) {
+  const queryClient = useQueryClient()
+  const [keyword, setKeyword] = useState(rule?.keyword ?? '')
+  const [categoryId, setCategoryId] = useState<string>(rule?.category_id ?? '')
+  const [direction, setDirection] = useState<string>(rule?.direction ?? 'any')
+  const [minAmount, setMinAmount] = useState(
+    rule?.min_amount != null ? String(rule.min_amount) : '',
+  )
+  const [maxAmount, setMaxAmount] = useState(
+    rule?.max_amount != null ? String(rule.max_amount) : '',
+  )
+  const [saving, setSaving] = useState(false)
+
+  const valid =
+    keyword.trim().length > 0 &&
+    categoryId.length > 0 &&
+    (minAmount.trim() === '' || !Number.isNaN(Number(minAmount))) &&
+    (maxAmount.trim() === '' || !Number.isNaN(Number(maxAmount)))
+
+  async function save() {
+    if (!valid) return
+    setSaving(true)
+    const payload = {
+      keyword: keyword.trim(),
+      categoryId: categoryId || null,
+      direction: (direction === 'any' ? null : direction) as RuleDirection | null,
+      minAmount: minAmount.trim() === '' ? null : Number(minAmount),
+      maxAmount: maxAmount.trim() === '' ? null : Number(maxAmount),
+    }
+    try {
+      if (rule) await cats.updateRule(rule.id, payload)
+      else await cats.addRule(payload)
+      void queryClient.invalidateQueries({ queryKey: sbKeys.rules })
+      toast.success(rule ? 'Rule updated' : 'Rule added')
+      onClose()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Could not save rule')
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => !saving && !o && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{rule ? 'Edit rule' : 'Add rule'}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 py-2">
+          <div className="space-y-1.5">
+            <Label htmlFor="rule-keyword">Keyword</Label>
+            <Input
+              id="rule-keyword"
+              value={keyword}
+              onChange={(e) => setKeyword(e.target.value)}
+              autoFocus
+              placeholder="e.g. whole foods"
+            />
+            <p className="text-xs text-muted-foreground">
+              Matches the merchant name or description (case-insensitive).
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="rule-category">Category</Label>
+            <Select value={categoryId} onValueChange={setCategoryId}>
+              <SelectTrigger id="rule-category">
+                <SelectValue placeholder="Choose a category" />
+              </SelectTrigger>
+              <SelectContent>
+                {categories.map((c) => (
+                  <SelectItem key={c.id} value={c.id}>
+                    {c.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="rule-direction">Direction (optional)</Label>
+            <Select value={direction} onValueChange={setDirection}>
+              <SelectTrigger id="rule-direction">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {DIRECTION_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>
+                    {o.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="rule-min">Min amount (optional)</Label>
+              <Input
+                id="rule-min"
+                inputMode="decimal"
+                value={minAmount}
+                onChange={(e) => setMinAmount(e.target.value)}
+                placeholder="0.00"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="rule-max">Max amount (optional)</Label>
+              <Input
+                id="rule-max"
+                inputMode="decimal"
+                value={maxAmount}
+                onChange={(e) => setMaxAmount(e.target.value)}
+                placeholder="No max"
+              />
+            </div>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="ghost" onClick={onClose} disabled={saving}>
+            Cancel
+          </Button>
+          <Button type="button" onClick={() => void save()} disabled={!valid || saving}>
+            {saving ? 'Saving…' : rule ? 'Save changes' : 'Add rule'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function RulesSection({ onBack }: { onBack: () => void }) {
+  const queryClient = useQueryClient()
+  const { data: rules = [] } = useRules()
+  // Include archived categories so rule targets still resolve to names.
+  const { data: allCats = [] } = useQuery({
+    queryKey: [...sbKeys.categories, 'all'],
+    queryFn: () => cats.fetchCategories({ includeInactive: true }),
+  })
+  const { data: memory = {} } = useQuery({
+    queryKey: ['sb', 'merchantMemory'],
+    queryFn: fetchMerchantMemory,
+  })
+  const [dialog, setDialog] = useState<{ rule: CategoryRule | null } | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState<CategoryRule | null>(null)
+
+  const nameById = useMemo(() => new Map(allCats.map((c) => [c.id, c.name])), [allCats])
+  const learnedEntries = useMemo(() => Object.entries(memory), [memory])
+
+  function invalidateRules() {
+    void queryClient.invalidateQueries({ queryKey: sbKeys.rules })
+  }
+
+  function ruleBadges(rule: CategoryRule) {
+    const badges: string[] = []
+    if (rule.direction === 'in') badges.push('Money in')
+    if (rule.direction === 'out') badges.push('Money out')
+    if (rule.min_amount != null) badges.push(`≥ $${rule.min_amount}`)
+    if (rule.max_amount != null) badges.push(`≤ $${rule.max_amount}`)
+    if (rule.set_reimbursement) badges.push('Reimbursement')
+    return badges
+  }
+
+  return (
+    <SectionView title="Rules" onBack={onBack}>
+      <div className="space-y-6">
+        <section className="card-surface p-2 md:p-3">
+          {rules.length === 0 ? (
+            <p className="px-4 py-8 text-center text-sm text-muted-foreground">
+              No keyword rules yet.
+            </p>
+          ) : (
+            <div className="divide-y divide-border">
+              {rules.map((rule) => (
+                <div key={rule.id} className="flex items-center gap-3 px-2 py-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-base font-medium text-foreground">
+                      “{rule.keyword}”{' '}
+                      <span className="font-normal text-muted-foreground">→</span>{' '}
+                      {rule.category_id ? (nameById.get(rule.category_id) ?? 'Unknown') : '—'}
+                    </p>
+                    {ruleBadges(rule).length > 0 && (
+                      <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                        {ruleBadges(rule).join(' · ')}
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    title="Edit rule"
+                    aria-label={`Edit rule for ${rule.keyword}`}
+                    onClick={() => setDialog({ rule })}
+                    className={cn(iconBtn, focusRing)}
+                  >
+                    <Pencil aria-hidden className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    title="Delete rule"
+                    aria-label={`Delete rule for ${rule.keyword}`}
+                    onClick={() => setConfirmDelete(rule)}
+                    className={cn(
+                      iconBtn,
+                      focusRing,
+                      'hover:bg-destructive/10 hover:text-destructive',
+                    )}
+                  >
+                    <Trash2 aria-hidden className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {learnedEntries.length > 0 && (
+          <section className="card-surface p-6">
+            <h3 className="mb-1 text-xl font-medium leading-7 text-foreground">Learned</h3>
+            <p className="mb-3 text-sm text-muted-foreground">
+              Remembered from how you categorize — these apply automatically.
+            </p>
+            <div className="divide-y divide-border">
+              {learnedEntries.map(([key, categoryId]) => (
+                <div key={key} className="flex items-center gap-3 py-2.5">
+                  <p className="min-w-0 flex-1 truncate text-sm text-foreground">
+                    {key} <span className="text-muted-foreground">→</span>{' '}
+                    {nameById.get(categoryId) ?? 'Unknown'}
+                  </p>
+                  <button
+                    type="button"
+                    title="Forget this mapping"
+                    aria-label={`Forget learned mapping for ${key}`}
+                    onClick={() => {
+                      toast.promise(forgetMerchant(key), {
+                        loading: 'Forgetting…',
+                        success: 'Mapping forgotten',
+                        error: (e) =>
+                          e instanceof Error ? e.message : 'Could not forget mapping',
+                      })
+                      void queryClient.invalidateQueries({ queryKey: ['sb', 'merchantMemory'] })
+                    }}
+                    className={cn(
+                      iconBtn,
+                      focusRing,
+                      'hover:bg-destructive/10 hover:text-destructive',
+                    )}
+                  >
+                    <Trash2 aria-hidden className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        <section className="card-surface p-2 md:p-3">
+          <SettingsRow
+            icon={<Plus aria-hidden className="h-5 w-5" />}
+            label="Add rule"
+            onClick={() => setDialog({ rule: null })}
+          />
+        </section>
+      </div>
+
+      {dialog && (
+        <RuleDialog
+          rule={dialog.rule}
+          categories={allCats.filter((c) => c.is_active !== false)}
+          onClose={() => setDialog(null)}
+        />
+      )}
+
+      <ConfirmDialog
+        open={!!confirmDelete}
+        title="Delete this rule?"
+        message={`The rule for “${confirmDelete?.keyword ?? ''}” will stop auto-categorizing matching transactions.`}
+        confirmLabel="Delete rule"
+        onConfirm={() => {
+          if (!confirmDelete) return
+          toast.promise(cats.deleteRule(confirmDelete.id).then(() => invalidateRules()), {
+            loading: 'Deleting…',
+            success: 'Rule deleted',
+            error: (e) => (e instanceof Error ? e.message : 'Could not delete rule'),
+          })
+          setConfirmDelete(null)
+        }}
+        onCancel={() => setConfirmDelete(null)}
+      />
+    </SectionView>
+  )
+}
+
+// ─── Notifications: per-type reminder prefs + email digest ────────────────
+
+interface NotifRowDef {
+  label: string
+  desc: string
+  enabledKey: 'notify_credit_enabled' | 'notify_bonus_enabled' | 'notify_fee_enabled'
+  daysKey: 'notify_credit_days' | 'notify_bonus_days' | 'notify_fee_days'
+  fallbackDays: number
+}
+
+const NOTIF_ROWS: NotifRowDef[] = [
+  {
+    label: 'Card credit reminders',
+    desc: 'Remind me before a card credit expires unused',
+    enabledKey: 'notify_credit_enabled',
+    daysKey: 'notify_credit_days',
+    fallbackDays: 7,
+  },
+  {
+    label: 'Signup bonus deadline reminders',
+    desc: 'Remind me before a bonus spend deadline',
+    enabledKey: 'notify_bonus_enabled',
+    daysKey: 'notify_bonus_days',
+    fallbackDays: 14,
+  },
+  {
+    label: 'Annual fee / cancel-by reminders',
+    desc: 'Remind me before an annual fee posts or a cancel-by date',
+    enabledKey: 'notify_fee_enabled',
+    daysKey: 'notify_fee_days',
+    fallbackDays: 30,
+  },
+]
+
+function NotifPrefRow({
+  label,
+  desc,
+  enabled,
+  days,
+  fallbackDays,
+  onToggle,
+  onDays,
+  saving,
+}: {
+  label: string
+  desc: string
+  enabled: boolean
+  days: number | null | undefined
+  fallbackDays: number
+  onToggle: (v: boolean) => void
+  onDays: (d: number) => void
+  saving: boolean
+}) {
+  const [draft, setDraft] = useState(String(days ?? fallbackDays))
+  useEffect(() => {
+    setDraft(String(days ?? fallbackDays))
+  }, [days, fallbackDays])
+
+  const parsed = Number.parseInt(draft, 10)
+  const daysValid = Number.isInteger(parsed) && parsed >= 1 && parsed <= 365
+  const dirty = draft !== String(days ?? fallbackDays)
+
+  function commitDays() {
+    if (!dirty || !daysValid) return
+    onDays(parsed)
+  }
+
+  return (
+    <div
+      className={cn(
+        'flex items-center gap-4 border-b border-border px-2 py-4 last:border-0',
+        !enabled && 'opacity-60',
+      )}
+    >
+      <div className="min-w-0 flex-1">
+        <p className="text-base font-medium text-foreground">{label}</p>
+        <p className="text-sm text-muted-foreground">{desc}</p>
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        <Input
+          className="w-20 text-center"
+          inputMode="numeric"
+          aria-label={`${label} — days before`}
+          value={draft}
+          disabled={!enabled || saving}
+          onChange={(e) => setDraft(e.target.value.replace(/[^0-9]/g, ''))}
+          onBlur={commitDays}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commitDays()
+          }}
+        />
+        <span className="text-sm text-muted-foreground">days</span>
+      </div>
+      <Switch
+        checked={enabled}
+        onCheckedChange={onToggle}
+        disabled={saving}
+        aria-label={label}
+      />
+    </div>
+  )
+}
+
+function NotificationsSection({ onBack }: { onBack: () => void }) {
+  const { data: profile } = useMyProfile()
+  const updateProfile = useUpdateMyProfile()
+  const saving = updateProfile.isPending
+
+  function save(patch: Parameters<typeof updateProfile.mutateAsync>[0], label: string) {
+    toast.promise(updateProfile.mutateAsync(patch), {
+      loading: 'Saving…',
+      success: label,
+      error: (e) => (e instanceof Error ? e.message : 'Could not save'),
+    })
+  }
+
+  return (
+    <SectionView title="Notifications" onBack={onBack}>
+      <div className="space-y-6">
+        <section className="card-surface px-4 py-2">
+          {NOTIF_ROWS.map((row) => (
+            <NotifPrefRow
+              key={row.enabledKey}
+              label={row.label}
+              desc={row.desc}
+              enabled={profile?.[row.enabledKey] ?? true}
+              days={profile?.[row.daysKey]}
+              fallbackDays={row.fallbackDays}
+              onToggle={(v) => save({ [row.enabledKey]: v }, v ? 'Reminders on' : 'Reminders off')}
+              onDays={(d) => save({ [row.daysKey]: d }, `Reminding ${d} days ahead`)}
+              saving={saving}
+            />
+          ))}
+        </section>
+
+        <section className="card-surface p-6">
+          <div className="flex items-center gap-4">
+            <div className="min-w-0 flex-1">
+              <p className="text-base font-medium text-foreground">Email digest</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Get the same reminders by email. Requires SMTP_HOST (and
+                SMTP_USER/SMTP_PASS) configured on your backend — in-app reminders always
+                work.
+              </p>
+            </div>
+            <Switch
+              checked={profile?.notify_email_enabled === true}
+              onCheckedChange={(v) =>
+                save({ notify_email_enabled: v === true }, v ? 'Email digest on' : 'Email digest off')
+              }
+              disabled={saving}
+              aria-label="Email digest"
+            />
+          </div>
+        </section>
+      </div>
+    </SectionView>
+  )
+}
+
+// ─── AI categorization: provider, threshold, key status ────────────────────
+
+const AI_THRESHOLD_OPTIONS = [0.5, 0.6, 0.7, 0.8, 0.9]
+
+function AiSection({ onBack }: { onBack: () => void }) {
+  const { data: profile } = useMyProfile()
+  const updateProfile = useUpdateMyProfile()
+  const saving = updateProfile.isPending
+  const [running, setRunning] = useState(false)
+
+  const { data: aiStatus } = useQuery({
+    queryKey: ['categorize-status'],
+    queryFn: fetchCategorizeStatus,
+    staleTime: 60_000,
+  })
+
+  function save(patch: Parameters<typeof updateProfile.mutateAsync>[0], label: string) {
+    toast.promise(updateProfile.mutateAsync(patch), {
+      loading: 'Saving…',
+      success: label,
+      error: (e) => (e instanceof Error ? e.message : 'Could not save'),
+    })
+  }
+
+  const enabled = profile?.ai_enabled ?? true
+  const provider = profile?.ai_provider ?? 'jev'
+  const threshold = profile?.ai_confidence_threshold ?? 0.7
+
+  async function runNow() {
+    setRunning(true)
+    try {
+      const stats = await autoCategorize()
+      if (!stats) {
+        toast.error('Could not reach the backend')
+        return
+      }
+      if (stats.status === 'disabled') toast('AI categorization is disabled')
+      else if (stats.status === 'misconfigured')
+        toast.error('AI provider is misconfigured — check the backend API key')
+      else
+        toast.success(
+          `Checked ${stats.checked}: ${stats.rules_applied} by rules, ${stats.from_cache} cached, ` +
+            `${stats.ai_applied} by AI, ${stats.needs_review} need review`,
+        )
+    } catch {
+      toast.error('AI categorization failed')
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  return (
+    <SectionView title="AI Categorization" onBack={onBack}>
+      <div className="space-y-6">
+        <section className="card-surface p-6">
+          <div className="flex items-center gap-4">
+            <div className="min-w-0 flex-1">
+              <p className="text-base font-medium text-foreground">Auto-categorize with AI</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                After every Plaid sync and CSV import, the AI classifies whatever your
+                rules and merchant memory couldn't. Your corrections always win — they
+                teach the memory the AI can never override.
+              </p>
+            </div>
+            <Switch
+              checked={enabled}
+              onCheckedChange={(v) => save({ ai_enabled: v === true }, v ? 'AI on' : 'AI off')}
+              disabled={saving}
+              aria-label="Auto-categorize with AI"
+            />
+          </div>
+        </section>
+
+        <section className="card-surface space-y-5 p-6">
+          <div>
+            <Label>Provider</Label>
+            <Select
+              value={provider}
+              onValueChange={(v) => save({ ai_provider: v }, 'Provider saved')}
+              disabled={saving || !enabled}
+            >
+              <SelectTrigger className="mt-2 w-full max-w-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="jev">Jev (TypeSafe)</SelectItem>
+                <SelectItem value="gemini">Gemini (stub — not implemented)</SelectItem>
+                <SelectItem value="off">Off</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Jev is a decision model, not a chatbot — it picks from your categories
+              with calibrated confidence. Swap providers with one setting; no code
+              changes.
+            </p>
+          </div>
+
+          <div>
+            <Label>Confidence threshold</Label>
+            <Select
+              value={String(threshold)}
+              onValueChange={(v) => save({ ai_confidence_threshold: Number(v) }, 'Threshold saved')}
+              disabled={saving || !enabled}
+            >
+              <SelectTrigger className="mt-2 w-full max-w-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {AI_THRESHOLD_OPTIONS.map((t) => (
+                  <SelectItem key={t} value={String(t)}>
+                    {Math.round(t * 100)}%{t === 0.7 ? ' (recommended)' : ''}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Below this confidence the AI looks the merchant up once, tries again, and
+              otherwise leaves the transaction in your review queue.
+            </p>
+          </div>
+        </section>
+
+        <section className="card-surface space-y-3 p-6">
+          <p className="text-base font-medium text-foreground">API keys</p>
+          <p className="text-sm text-muted-foreground">
+            Keys live in the backend's environment — never in the database. Only
+            presence is shown here.
+          </p>
+          <dl className="space-y-2 text-sm">
+            <div className="flex items-center justify-between">
+              <dt className="text-muted-foreground">Jev (JEV_API_KEY)</dt>
+              <dd className="font-medium text-foreground">
+                {aiStatus ? (aiStatus.jev_key_configured ? 'Configured' : 'Missing') : '…'}
+              </dd>
+            </div>
+            <div className="flex items-center justify-between">
+              <dt className="text-muted-foreground">Brave Search (BRAVE_API_KEY)</dt>
+              <dd className="font-medium text-foreground">
+                {aiStatus ? (aiStatus.brave_key_configured ? 'Configured' : 'Missing') : '…'}
+              </dd>
+            </div>
+          </dl>
+          <div className="pt-1">
+            <Button onClick={() => void runNow()} disabled={running || !enabled}>
+              {running ? 'Categorizing…' : 'Run now'}
+            </Button>
+          </div>
+        </section>
+      </div>
+    </SectionView>
+  )
+}
+
+// ─── Data: CSV import / export ────────────────────────────────────────────
+
+function DataSection({ onBack }: { onBack: () => void }) {
+  const navigate = useNavigate()
+  const { data: accounts = [] } = useAccounts()
+  const [exporting, setExporting] = useState(false)
+
+  async function exportAll() {
+    setExporting(true)
+    try {
+      const txns = await fetchTransactionsRange('2000-01-01', '2100-01-01', {
+        includeExcluded: true,
+      })
+      const accountsById = new Map(accounts.map((a) => [a.id, { name: a.name }]))
+      const stamp = new Date().toISOString().slice(0, 10)
+      downloadCsv(`transactions-${stamp}.csv`, transactionsToCsv(txns, accountsById))
+      toast.success(`Exported ${txns.length} transactions`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Could not export transactions')
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  return (
+    <SectionView title="Data" onBack={onBack}>
+      <section className="card-surface p-2 md:p-3">
+        <div className="space-y-1">
+          <SettingsRow
+            icon={<Upload aria-hidden className="h-5 w-5" />}
+            label="Import transactions (CSV)"
+            onClick={() => navigate('/transactions')}
+          />
+          <SettingsRow
+            icon={<Download aria-hidden className="h-5 w-5" />}
+            label={exporting ? 'Exporting…' : 'Export transactions (CSV)'}
+            onClick={() => void exportAll()}
+          />
+        </div>
+      </section>
+    </SectionView>
+  )
+}
+
+// ─── Delete Account Dialog (3-step — preserved verbatim; do not regress) ────
 
 const IMPACT_ITEMS = [
   { icon: '↔', label: 'All transactions & splits' },
-  { icon: '🏷', label: 'Tags & auto-classify rules' },
-  { icon: '📊', label: 'Categories & budgets' },
-  { icon: '🏦', label: 'Linked bank connections' },
   { icon: '💳', label: 'Accounts & balance history' },
+  { icon: '🏦', label: 'Linked bank connections' },
+  { icon: '📊', label: 'Categories & budgets' },
   { icon: '🔁', label: 'Recurring charge tracking' },
   { icon: '↕', label: 'Transfer & reimbursement links' },
-  { icon: '📈', label: 'Net worth history' },
-  { icon: '⚖', label: 'Zero-sum budget data' },
-  { icon: '👤', label: 'Profile & notification settings' },
+  { icon: '👤', label: 'Profile settings' },
 ]
 
 function DeleteAccountDialog({
@@ -843,21 +1936,21 @@ function DeleteSlider({ onConfirmed }: { onConfirmed: () => void }) {
   const maxOffset = Math.max(0, trackW - THUMB_W)
   const progress = maxOffset > 0 ? Math.min(offset / maxOffset, 1) : 0
 
-  const onPointerDown = useCallback((e: React.PointerEvent) => {
+  const onPointerDown = (e: React.PointerEvent) => {
     if (confirmed) return
     dragging.current = true
     startX.current = e.clientX
     startOffset.current = offset
     ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
-  }, [confirmed, offset])
+  }
 
-  const onPointerMove = useCallback((e: React.PointerEvent) => {
+  const onPointerMove = (e: React.PointerEvent) => {
     if (!dragging.current || confirmed) return
     const delta = e.clientX - startX.current
     setOffset(Math.min(Math.max(0, startOffset.current + delta), maxOffset))
-  }, [confirmed, maxOffset])
+  }
 
-  const onPointerUp = useCallback(() => {
+  const onPointerUp = () => {
     if (!dragging.current) return
     dragging.current = false
     if (progress >= THRESHOLD) {
@@ -869,7 +1962,7 @@ function DeleteSlider({ onConfirmed }: { onConfirmed: () => void }) {
       // Snap back with CSS transition (applied via class when not dragging).
       setOffset(0)
     }
-  }, [progress, maxOffset, onConfirmed])
+  }
 
   return (
     <div

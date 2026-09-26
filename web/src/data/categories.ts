@@ -5,11 +5,15 @@ import { supabase } from '@/lib/supabase'
 import type { Category, CategoryRule, RuleDirection, UUID } from '@/types/domain'
 import { logAddRule, logDeleteRule } from './activity'
 
-export async function fetchCategories(): Promise<Category[]> {
-  const { data, error } = await supabase
-    .from('categories')
-    .select('*')
-    .order('sort_order', { ascending: true })
+/** Active categories for the signed-in user (archived ones excluded unless
+ *  includeInactive is set). Archived categories keep their history but stop
+ *  appearing in pickers and auto-categorization. */
+export async function fetchCategories(
+  opts: { includeInactive?: boolean } = {},
+): Promise<Category[]> {
+  let q = supabase.from('categories').select('*')
+  if (!opts.includeInactive) q = q.eq('is_active', true)
+  const { data, error } = await q.order('sort_order', { ascending: true })
   if (error) throw error
   return (data ?? []) as Category[]
 }
@@ -48,6 +52,16 @@ export async function upsertCategory(
 
 export async function deleteCategory(id: UUID): Promise<void> {
   const { error } = await supabase.from('categories').delete().eq('id', id)
+  if (error) throw error
+}
+
+/** Archive (or restore) a category. Archived categories are hidden from the
+ *  default category list but their transaction history is untouched. */
+export async function setCategoryActive(id: UUID, active: boolean): Promise<void> {
+  const { error } = await supabase
+    .from('categories')
+    .update({ is_active: active })
+    .eq('id', id)
   if (error) throw error
 }
 
@@ -115,8 +129,32 @@ export async function addRule(input: NewRule, opts: { log?: boolean } = {}): Pro
     void logAddRule((data as { id: UUID }).id, input.keyword, input.categoryId)
 }
 
-export async function deleteRule(id: UUID, opts: { log?: boolean } = {}): Promise<void> {
-  // Capture keyword+category before the row is gone so the entry can re-create it on undo.
+/** Patch for updating an existing category rule — same fields as NewRule. */
+export interface RulePatch {
+  keyword?: string
+  categoryId?: UUID | null
+  direction?: RuleDirection | null
+  minAmount?: number | null
+  maxAmount?: number | null
+  setReimbursement?: boolean
+}
+
+/** Update a keyword→category rule in place (no activity-log entry; edits are
+ *  not reversible through the undo feed). */
+export async function updateRule(id: UUID, patch: RulePatch): Promise<void> {
+  const column: Record<string, unknown> = {}
+  if (patch.keyword !== undefined) column.keyword = patch.keyword
+  if (patch.categoryId !== undefined) column.category_id = patch.categoryId
+  if (patch.direction !== undefined) column.direction = patch.direction
+  if (patch.minAmount !== undefined) column.min_amount = patch.minAmount
+  if (patch.maxAmount !== undefined) column.max_amount = patch.maxAmount
+  if (patch.setReimbursement !== undefined) column.set_reimbursement = patch.setReimbursement
+  if (Object.keys(column).length === 0) return
+  const { error } = await supabase.from('category_rules').update(column).eq('id', id)
+  if (error) throw error
+}
+
+export async function deleteRule(id: UUID, opts: { log?: boolean } = {}): Promise<void> {  // Capture keyword+category before the row is gone so the entry can re-create it on undo.
   const { data: existing } = opts.log === false
     ? { data: null }
     : await supabase.from('category_rules').select('keyword, category_id').eq('id', id).single()

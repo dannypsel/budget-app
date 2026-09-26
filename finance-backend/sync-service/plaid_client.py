@@ -9,8 +9,7 @@ returns None and users without a plaid_credentials row simply can't link
 banks until they add credentials in Settings.
 
 Every plaid_items row records the plaid_client_id that created it, so sync
-and webhook verification always call Plaid with the right account's
-credentials.
+always calls Plaid with the right account's credentials.
 """
 import logging
 import os
@@ -23,6 +22,7 @@ from plaid.model.institutions_get_by_id_request import InstitutionsGetByIdReques
 from plaid.model.institutions_get_by_id_request_options import InstitutionsGetByIdRequestOptions
 
 import vault
+from envutil import _env_int
 
 load_dotenv()
 
@@ -36,7 +36,7 @@ _ENV_MAP = {
 _clients: dict = {}      # (client_id, env) -> PlaidApi
 _creds_cache: dict = {}  # plaid_client_id -> decrypted creds dict
 
-DEFAULT_ITEM_LIMIT = int(os.environ.get('PLAID_ITEM_LIMIT', '10'))
+DEFAULT_ITEM_LIMIT = _env_int('PLAID_ITEM_LIMIT', 10)
 
 
 def house_creds():

@@ -1,10 +1,9 @@
-// Reaching the Render backend (pocketlens-api) through its cold start. On the free
-// tier the service spins down after ~15 min idle and cold-starts on the next hit,
-// which can take ~30-50s or bounce a 502/503/504 — so the *first* action after a
-// lull "bugs out" and the retry works. Two tactics kill that first-hit failure
-// without keeping the dyno warm 24/7 (which would blow the free instance-hour cap):
-//   • prewarm() — fire once on app boot so the server is usually up by the time the
-//     user actually clicks something.
+// Reaching the backend (AWS Lambda behind a Function URL) through its cold
+// start. After idle, Lambda re-provisions the function and the first hit can
+// take a few seconds or bounce a 502/503/504 — so the *first* action after a
+// lull can fail and the retry works. Two tactics hide that first-hit failure:
+//   • prewarm() — fire once on app boot so the function is usually warm by the
+//     time the user actually clicks something.
 //   • warmFetch() / openWarmTab() — ride out the cold-start window at the call site.
 
 const BACKEND = import.meta.env.VITE_BACKEND_URL as string

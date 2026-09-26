@@ -12,6 +12,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault('SUPABASE_URL', 'https://example.supabase.co')
 os.environ.setdefault('SUPABASE_SERVICE_ROLE_KEY', 'test-service-role-key')
 
+# The test only ever constructs a client object — it never issues requests.
+# supabase-auth builds its httpx client with trust_env, and some sandboxes set
+# no_proxy entries (e.g. a bare ::1) that httpx's proxy-URL parsing rejects.
+# Pop them so the test is hermetic.
+for _proxy_var in ('no_proxy', 'NO_PROXY'):
+    os.environ.pop(_proxy_var, None)
+
 from supabase_client import get_supabase
 
 

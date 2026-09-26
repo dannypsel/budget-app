@@ -14,9 +14,24 @@ const currencyFmt = new Intl.NumberFormat(undefined, {
   currencyDisplay: CURRENCY_DISPLAY,
 })
 
+// App-wide default currency (ISO code) — set once from the user's profile
+// after auth is ready (see PocketLensApp). The per-call `currency` argument
+// always wins; this is only the fallback for call sites that don't pass one.
+let defaultCurrency = 'USD'
+
+/** Override the fallback currency for formatCurrency/formatAmount. */
+export function setDefaultCurrency(code: string): void {
+  if (code && code.trim().length > 0) defaultCurrency = code.trim().toUpperCase()
+}
+
+/** The current fallback currency ('USD' until setDefaultCurrency is called). */
+export function getDefaultCurrency(): string {
+  return defaultCurrency
+}
+
 /** "$1,234.56" — signed. Tolerant of arbitrary/unknown ISO codes — investment holdings
  *  can carry any currency Plaid returns; falls back to "12.34 XYZ" if Intl rejects the code. */
-export function formatCurrency(n: number, currency = 'USD'): string {
+export function formatCurrency(n: number, currency: string = getDefaultCurrency()): string {
   if (currency === 'USD') return currencyFmt.format(n)
   try {
     return new Intl.NumberFormat(undefined, {
@@ -30,7 +45,7 @@ export function formatCurrency(n: number, currency = 'USD'): string {
 }
 
 /** Magnitude only, e.g. "$65.00" (used for transaction rows like iOS AmountText). */
-export function formatAmount(n: number, currency = 'USD'): string {
+export function formatAmount(n: number, currency: string = getDefaultCurrency()): string {
   return formatCurrency(Math.abs(n), currency)
 }
 

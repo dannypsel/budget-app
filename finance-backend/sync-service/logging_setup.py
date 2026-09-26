@@ -1,7 +1,7 @@
-"""Central stdout logging setup, shared by api.py (web) and sync.py (cron).
+"""Central stdout logging setup, shared by api.py (web) and sync.py (manual refresh).
 
-stdout is the only sink: JSON lines on Render (RENDER env set) or LOG_FORMAT=json,
-human-readable text otherwise. Render captures stdout. LOG_LEVEL controls verbosity.
+stdout is the only sink: JSON lines when LOG_FORMAT=json (set on Lambda),
+human-readable text otherwise. CloudWatch captures stdout. LOG_LEVEL controls verbosity.
 
 Call setup_logging() once, before creating the FastAPI app.
 """
@@ -42,7 +42,7 @@ def setup_logging():
     root = logging.getLogger()
     root.setLevel(os.environ.get('LOG_LEVEL', 'INFO').upper())
     handler = logging.StreamHandler(sys.stdout)
-    use_json = os.environ.get('LOG_FORMAT', 'json' if os.environ.get('RENDER') else 'text') == 'json'
+    use_json = os.environ.get('LOG_FORMAT', 'text') == 'json'
     if use_json:
         handler.setFormatter(JsonFormatter())
     else:

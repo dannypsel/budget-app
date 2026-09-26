@@ -1,18 +1,16 @@
 // Grid category picker with a "None" option — mirrors iOS CategoryPickerSheet.
 // When the transaction is already a transfer, shows a focused transfer view instead
-// (no categories, tags, or splits — those don't apply to transfers).
+// (no categories — those don't apply to transfers). Transfer linking/unlinking lives
+// on the Transactions → Transfers tab.
 
 import { useMemo, useState } from 'react'
-import { ArrowLeftRight, ArrowRight, Eye, EyeOff, MapPin, Plus, Split, Undo2, XCircle } from 'lucide-react'
+import { ArrowRight, Eye, EyeOff, MapPin, Plus, Undo2, XCircle } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Switch } from '@/components/ui/switch'
 import { CategoryIcon } from './CategoryIcon'
-import { TxnTagEditor } from './TxnTagEditor'
-import { SplitDialog } from './SplitDialog'
-import { TransferDialog } from './TransferDialog'
-import { useAccountsWithBalance, useCategories, useSetHidden, useSetReimbursement, useTransferGroupLegs, useUpsertCategory } from '@/data/hooks'
+import { useAccountsWithBalance, useCategories, useSetExcludeFromTotals, useSetHidden, useSetReimbursement, useTransferGroupLegs, useUpsertCategory } from '@/data/hooks'
 import { TAG_PALETTE } from '@/lib/tagColors'
-import { displayName, hasSplits, isForeignCurrency, isReimbursement, isTransfer, merchantLocation, type Transaction, type UUID } from '@/types/domain'
+import { displayName, isForeignCurrency, isReimbursement, isTransfer, merchantLocation, type Transaction, type UUID } from '@/types/domain'
 import { formatAmount, formatCurrency } from '@/lib/money'
 import { formatShortDate } from '@/lib/dates'
 import { summarizeTransferGroup } from '@/data/transfers'
@@ -34,9 +32,8 @@ export function CategoryPickerDialog({
   const { data: categories = [] } = useCategories()
   const setHidden = useSetHidden()
   const setReimbursement = useSetReimbursement()
+  const setExcludeFromTotals = useSetExcludeFromTotals()
   const upsertCategory = useUpsertCategory()
-  const [splitOpen, setSplitOpen] = useState(false)
-  const [transferOpen, setTransferOpen] = useState(false)
   const [adding, setAdding] = useState(false)
   const [newName, setNewName] = useState('')
 
@@ -49,7 +46,7 @@ export function CategoryPickerDialog({
   )
   const transferSummary = useMemo(
     () => (groupLegs && groupLegs.length > 0 ? summarizeTransferGroup(groupLegs, accountsById) : null),
-    [groupLegs, accountsById],
+    [groupLegs, accountsData],
   )
 
   // A reimbursement is an incoming credit (amount < 0) that offsets a category's spend.
@@ -94,6 +91,14 @@ export function CategoryPickerDialog({
     }
   }
 
+  /** "Ignore in spending plan" — flips exclude_from_totals directly. Hidden and
+   *  transfer legs are always excluded by their own flows, so the toggle is only
+   *  offered on plain visible rows. */
+  function toggleIgnored(exclude: boolean) {
+    if (!txn) return
+    setExcludeFromTotals.mutate({ transactionId: txn.id, exclude })
+  }
+
   /** Create the category and immediately assign it to the txn. */
   async function createAndPick() {
     const name = newName.trim()
@@ -114,7 +119,7 @@ export function CategoryPickerDialog({
       <DialogContent className="max-w-md overflow-hidden">
 
         {txn && isTransfer(txn) ? (
-          // ── Transfer view — transfers don't have categories, tags, or splits ──
+          // ── Transfer view — transfers don't have categories ──
           <>
             <DialogHeader>
               <DialogTitle>Transfer</DialogTitle>
@@ -148,15 +153,6 @@ export function CategoryPickerDialog({
             ) : (
               <p className="px-1 text-sm text-muted-foreground">Loading transfer details…</p>
             )}
-
-            {/* Only action: unlink */}
-            <button
-              onClick={() => setTransferOpen(true)}
-              className="flex items-center gap-1.5 self-start rounded-md px-1 text-sm font-medium text-destructive transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive"
-            >
-              <ArrowLeftRight className="h-4 w-4" />
-              Unlink transfer
-            </button>
           </>
         ) : (
           // ── Normal categorize view ───────────────────────────────────────────
@@ -211,6 +207,30 @@ export function CategoryPickerDialog({
                   checked={reimbursing}
                   onCheckedChange={toggleReimbursing}
                   aria-label="Reimbursement"
+                  className="mt-0.5"
+                />
+              </label>
+            )}
+            {/* Ignore in spending plan — flips exclude_from_totals, the same flag every
+                totals query filters on. Hidden and transfer legs are always excluded, so
+                the toggle only applies to plain visible rows. */}
+            {txn && !txn.hidden && !isTransfer(txn) && (
+              <label className="mb-1 flex items-start gap-3 rounded-lg bg-surface-container-low px-3 py-2.5">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface-container-high text-muted-foreground">
+                  <EyeOff className="h-4 w-4" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-medium text-foreground">
+                    Ignore in spending plan
+                  </span>
+                  <span className="block text-xs text-muted-foreground">
+                    Leaves it out of spending totals without hiding it
+                  </span>
+                </span>
+                <Switch
+                  checked={txn.exclude_from_totals}
+                  onCheckedChange={toggleIgnored}
+                  aria-label="Ignore in spending plan"
                   className="mt-0.5"
                 />
               </label>
@@ -281,29 +301,9 @@ export function CategoryPickerDialog({
                 <button
                   onClick={createAndPick}
                   disabled={!newName.trim() || upsertCategory.isPending}
-                  className="rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary-container focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-card disabled:opacity-50 motion-reduce:transition-none"
+                  className="rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-card disabled:opacity-50 motion-reduce:transition-none"
                 >
                   Add
-                </button>
-              </div>
-            )}
-            {txn && <TxnTagEditor key={txn.id} txn={txn} />}
-            {/* Split + "Mark as transfer" — mutually exclusive with reimbursement mode. */}
-            {txn && !reimbursing && (
-              <div className="flex flex-wrap gap-4">
-                <button
-                  onClick={() => setSplitOpen(true)}
-                  className="mt-1 flex items-center gap-1.5 self-start rounded-md px-1 text-sm font-medium text-primary transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                >
-                  <Split className="h-4 w-4" />
-                  {hasSplits(txn) ? 'Edit split' : 'Split transaction'}
-                </button>
-                <button
-                  onClick={() => setTransferOpen(true)}
-                  className="mt-1 flex items-center gap-1.5 self-start rounded-md px-1 text-sm font-medium text-primary transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                >
-                  <ArrowLeftRight className="h-4 w-4" />
-                  Mark as transfer
                 </button>
               </div>
             )}
@@ -311,28 +311,6 @@ export function CategoryPickerDialog({
         )}
 
       </DialogContent>
-
-      {txn && splitOpen && (
-        <SplitDialog
-          txn={txn}
-          open={splitOpen}
-          onOpenChange={(o) => {
-            setSplitOpen(o)
-            if (!o) onOpenChange(false)
-          }}
-        />
-      )}
-
-      {txn && transferOpen && (
-        <TransferDialog
-          txn={txn}
-          open={transferOpen}
-          onOpenChange={(o) => {
-            setTransferOpen(o)
-            if (!o) onOpenChange(false)
-          }}
-        />
-      )}
     </Dialog>
   )
 }

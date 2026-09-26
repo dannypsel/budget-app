@@ -4,8 +4,9 @@ import { renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PlaidItem } from '@/types/domain'
+import type { SyncSummary } from './sync'
 
-const triggerSync = vi.fn<() => Promise<void>>()
+const triggerSync = vi.fn<() => Promise<SyncSummary>>()
 const fetchPlaidItems = vi.fn<() => Promise<PlaidItem[]>>()
 
 vi.mock('./sync', () => ({
@@ -59,7 +60,7 @@ describe('useAutoSyncOnLogin', () => {
   beforeEach(() => {
     vi.useFakeTimers({ now: NOW, toFake: ['Date'] })
     qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    triggerSync.mockReset().mockResolvedValue()
+    triggerSync.mockReset().mockResolvedValue({ status: 'ok', items_synced: 1 })
     fetchPlaidItems.mockReset()
   })
   afterEach(() => {

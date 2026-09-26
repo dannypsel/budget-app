@@ -1,25 +1,26 @@
-# PocketLens sync service — FastAPI web API and the sync/reconcile/digest jobs.
+# PocketLens sync service — FastAPI API on AWS Lambda (container image).
 # Build context: finance-backend/sync-service/
 #
-# Runs the web API by default:
-#   docker build -t pocketlens-api finance-backend/sync-service
-#   docker run -p 8000:8000 --env-file finance-backend/sync-service/.env pocketlens-api
+# Deploy: the deploy worker builds this image and pushes it to ECR, and Lambda
+# invokes it through a Lambda Function URL:
+#   docker build --platform linux/arm64 -t pocketlens-api finance-backend/sync-service
 #
-# The same image runs the scheduled jobs — override the command:
-#   docker run --env-file .env pocketlens-api \
-#     sh -c "python sync.py && python reconcile.py && python digests.py"
-FROM python:3.12-slim
+# Architecture note: the base image below is multi-arch; this Dockerfile
+# targets ARM64 (Graviton2 — cheaper and faster per ms on Lambda). Rebuild
+# with --platform linux/amd64 if the deployment targets x86_64 instead.
+#
+# Lambda contract: CMD is the lambda_handler.handler Mangum adapter object;
+# lambda_handler.py documents the exact (module, object) contract the deploy
+# worker expects. Local dev never uses this Dockerfile — run uvicorn directly
+# (see scripts/local-dev.sh), which is why uvicorn stays in requirements.txt.
+FROM public.ecr.aws/lambda/python:3.12
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-WORKDIR /app
-
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+COPY . ${LAMBDA_TASK_ROOT}
 
-EXPOSE 8000
-
-CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["lambda_handler.handler"]

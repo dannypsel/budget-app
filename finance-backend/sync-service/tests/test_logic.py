@@ -380,49 +380,30 @@ def test_is_product_not_ready_detects_plaid_code():
     assert sync._is_product_not_ready(ValueError("nope")) is False, "non-Plaid errors are never not-ready"
 
 
-# ── 3. Net worth snapshot ───────────────────────────────────────────────────
-def test_net_worth_math():
-    """Assets vs liabilities from the latest balance per account: credit/loan are
-    liabilities, negative balances clamp to 0, inactive accounts are excluded, and
-    manual 'separate' accounts fold in from their signed ledger.
+def test_product_not_ready_counts_as_skipped_not_synced(monkeypatch):
+    """A PRODUCT_NOT_READY soft skip must land in items_skipped, not
+    items_synced — the refresh summary shouldn't claim work that didn't run."""
+    db = FakeSupabase(tables={"plaid_items": [{
+        "id": "item-1", "user_id": USER, "plaid_item_id": "plaid-x",
+        "access_token": "enc", "plaid_client_id": "c" * 24,
+        "institution_name": "Bank", "is_active": True,
+    }]})
+    monkeypatch.setattr(sync, "get_supabase", lambda: db)
+    monkeypatch.setattr(sync, "get_plaid_for_item", lambda sb, item: object())
+    monkeypatch.setattr(sync, "_ensure_institution_branding", lambda *a: None)
+    monkeypatch.setattr(sync, "load_guess_context", lambda uid: {})
+    monkeypatch.setattr(sync, "sync_item", lambda *a, **k: "skipped_not_ready")
+    monkeypatch.setattr(sync, "_finalize_user", lambda *a, **k: {})
+    monkeypatch.setattr(sync, "_log_start", lambda *a, **k: "log-1")
+    monkeypatch.setattr(sync, "_log_end", lambda *a, **k: None)
 
-    NOTE: latest_balances is a DB view; here it's seeded directly to exercise the
-    Python aggregation. The view itself (latest-per-account, RLS) is covered in
-    test_integration.py."""
-    db = FakeSupabase(tables={
-        "latest_balances": [
-            {"user_id": USER, "account_id": "a-check", "current_balance": 1000},   # asset
-            {"user_id": USER, "account_id": "a-card", "current_balance": 200},     # liability (credit)
-            {"user_id": USER, "account_id": "a-neg", "current_balance": -50},      # asset, negative → clamps to 0
-            {"user_id": USER, "account_id": "a-dead", "current_balance": 9999},    # inactive → excluded
-        ],
-        "accounts": [   # active accounts only; a-dead intentionally absent
-            {"id": "a-check", "user_id": USER, "type": "depository", "is_active": True},
-            {"id": "a-card", "user_id": USER, "type": "credit", "is_active": True},
-            {"id": "a-neg", "user_id": USER, "type": "depository", "is_active": True},
-        ],
-        "separate_accounts": [
-            {"id": "s-invest", "user_id": USER, "type": "investment", "is_active": True},   # asset
-            {"id": "s-loan", "user_id": USER, "type": "loan", "is_active": True},           # liability
-        ],
-        "separate_account_values": [
-            {"separate_account_id": "s-invest", "amount": 4000},
-            {"separate_account_id": "s-invest", "amount": 1000},   # summed → 5000
-            {"separate_account_id": "s-loan", "amount": 1500},
-        ],
-    })
-
-    sync.write_net_worth_snapshot(db, USER)
-
-    snap = db.one("net_worth_snapshots", user_id=USER)
-    assert snap is not None, "snapshot must be user-stamped"
-    assert snap["total_assets"] == 6000.0, snap        # 1000 + 0(clamped) + 5000
-    assert snap["total_liabilities"] == 1700.0, snap   # 200 + 1500
-    assert snap["net_worth"] == 4300.0                 # generated column mirror
-    assert snap["date"] == datetime.date.today().isoformat()
+    result = sync.run_sync(USER)
+    assert result["items_synced"] == 0
+    assert result["items_skipped"] == 1
+    assert result["items_failed"] == 0
 
 
-# ── 4. Recurring contributions ──────────────────────────────────────────────
+# ── 3. Recurring contributions ──────────────────────────────────────────────
 def test_recurring_contributions_logic():
     """Each elapsed period since anchor/last posts exactly one ledger delta, then
     last_applied_date advances to the last posted date. Non-positive frequency is
@@ -486,79 +467,7 @@ def test_cron_finalizes_manual_only_recurring_users(monkeypatch):
     assert "paused-user" not in finalized, "inactive flows don't pull their owner in"
 
 
-# ── 5. Plaid webhook signature verification ─────────────────────────────────
-# A key-service outage must be distinguished from a bad signature: dropping a
-# genuine webhook as "invalid signature" during a Plaid outage silently halts
-# real-time sync. Infra failure -> raise (caller 5xxes, Plaid retries);
-# genuinely bad token -> False (reject).
-import base64
-import json as _json
-
-import plaid
-import pytest
-
-import api
-
-
-def _es256_token(kid="k1"):
-    """A token whose *unverified* header is a valid ES256/kid header (enough to
-    reach the key fetch); the signature itself is never checked in these tests."""
-    def _seg(d):
-        return base64.urlsafe_b64encode(_json.dumps(d).encode()).rstrip(b"=").decode()
-    return f"{_seg({'alg': 'ES256', 'kid': kid})}.{_seg({})}.sig"
-
-
-class _RaisingPlaid:
-    """Plaid client whose verification-key fetch always raises `exc`."""
-
-    def __init__(self, exc):
-        self.exc = exc
-        self.calls = 0
-
-    def webhook_verification_key_get(self, req):
-        self.calls += 1
-        raise self.exc
-
-
-def test_webhook_key_service_outage_raises_not_false():
-    """A network error / Plaid outage while fetching the key surfaces as
-    WebhookKeyUnavailable — NOT swallowed as a valid-signature failure."""
-    api._key_cache.clear()
-    client = _RaisingPlaid(ConnectionError("plaid key service unreachable"))
-    with pytest.raises(api.WebhookKeyUnavailable):
-        api._verify_plaid_webhook(client, "client-1", _es256_token(), b"{}")
-    assert client.calls == 1, "must actually attempt the key fetch"
-
-
-def test_webhook_plaid_5xx_is_infra_failure():
-    """A 5xx from Plaid's key service is infra (Plaid failing us), not a bad
-    signature -> raise so the handler 5xxes and Plaid retries."""
-    api._key_cache.clear()
-    client = _RaisingPlaid(plaid.ApiException(status=503))
-    with pytest.raises(api.WebhookKeyUnavailable):
-        api._verify_plaid_webhook(client, "client-1", _es256_token(), b"{}")
-
-
-def test_webhook_unknown_kid_4xx_is_bad_signature():
-    """A 4xx (Plaid refusing the key_id — a kid not owned by this account) means
-    the token is unverifiable, i.e. a bad signature -> False, not an infra 5xx."""
-    api._key_cache.clear()
-    client = _RaisingPlaid(plaid.ApiException(status=400))
-    assert api._verify_plaid_webhook(client, "client-1", _es256_token(), b"{}") is False
-
-
-def test_webhook_malformed_token_is_bad_signature_without_key_fetch():
-    """Missing / non-ES256 / garbage tokens are rejected as bad signatures
-    (False) and never even reach the key service."""
-    client = _RaisingPlaid(AssertionError("key fetch must not be attempted"))
-    assert api._verify_plaid_webhook(client, "client-1", "", b"{}") is False
-    assert api._verify_plaid_webhook(client, "client-1", "not-a-jwt", b"{}") is False
-    hs256 = base64.urlsafe_b64encode(b'{"alg":"HS256"}').rstrip(b"=").decode() + ".x.y"
-    assert api._verify_plaid_webhook(client, "client-1", hs256, b"{}") is False
-    assert client.calls == 0
-
-
-# ── 6. Recurring contributions: no double-count under overlapping syncs ──────
+# ── 5. Recurring contributions: no double-count under overlapping syncs ──────
 def test_recurring_contributions_no_double_count_on_overlapping_sync():
     """Two overlapping syncs that both read the same (pre-advance)
     last_applied_date must not double-post the same periods. The unique

@@ -6,7 +6,6 @@
 import { useMemo } from 'react'
 import { ArrowLeftRight, EyeOff, Split, Undo2, type LucideIcon } from 'lucide-react'
 import { CategoryBadge } from '@/components/finance/CategoryBadge'
-import { TagChip } from '@/components/finance/TagChip'
 import { Amount } from '@/components/finance/Amount'
 import { iconForSymbol } from '@/lib/iconMap'
 import { categoryTint } from '@/lib/categoryColors'
@@ -18,7 +17,6 @@ import {
   isReimbursement,
   isTransfer,
   txnSplits,
-  txnTags,
   type Account,
   type Transaction,
   type UUID,
@@ -120,9 +118,6 @@ export function TransactionList({
                       ) : (
                         <span className="truncate">{t.categories?.name ?? 'Uncategorized'}</span>
                       )}
-                      {txnTags(t).map((tag) => (
-                        <TagChip key={tag.id} tag={tag} />
-                      ))}
                       {t.pending && (
                         <span className="font-semibold text-warning">Pending</span>
                       )}

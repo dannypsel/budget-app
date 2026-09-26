@@ -23,6 +23,9 @@ export interface Category {
   group_id: UUID | null // optional membership in a category_group
   sort_order: number
   kind: 'spend' | 'income'
+  /** False when the user archived the category; undefined on rows read before
+   *  the is_active migration. */
+  is_active?: boolean
 }
 
 /** tags row. `color` is hex, rendered inline like category colors. */
@@ -391,12 +394,53 @@ export interface DeviceToken {
   updated_at?: string | null
 }
 
+/** notifications row — a backend-generated alert (credit expiry, bonus
+ *  deadline, annual fee, cancel-by). Shown in the bell inbox in TopAppBar;
+ *  `data` carries deep-link context (card_id, credit_id, …). */
+export type NotificationType = 'credit_expiry' | 'bonus_deadline' | 'annual_fee' | 'cancel_by'
+
+export interface UserNotification {
+  id: UUID
+  type: NotificationType
+  title: string
+  body: string
+  data: Record<string, unknown>
+  is_read: boolean
+  created_at: string // ISO timestamp
+  dedup_key: string | null
+}
+
 /** profiles row — 1:1 with the auth user (id IS the auth user id). Holds the user's
- *  first/last name, captured at signup and editable later. */
+ *  first/last name, display currency, theme choice, and per-type reminder
+ *  preferences read by the notify.py scheduler. New columns read as undefined
+ *  on rows fetched before the settings-preferences migration. */
 export interface Profile {
   id: UUID
   first_name: string | null
   last_name: string | null
+  /** Email digest opt-in for credit/bonus/fee reminders. Added by migration;
+   *  undefined on rows read before the column exists. */
+  notify_email_enabled?: boolean | null
+  /** Display currency (ISO code), applied app-wide via lib/money. */
+  currency?: string | null
+  /** 'light' | 'dark' | 'system' — next-themes key persisted server-side. */
+  theme?: string | null
+  /** Card-credit reminders: on/off + lead-time days. */
+  notify_credit_enabled?: boolean | null
+  notify_credit_days?: number | null
+  /** Signup-bonus deadline reminders: on/off + lead-time days. */
+  notify_bonus_enabled?: boolean | null
+  notify_bonus_days?: number | null
+  /** Annual-fee / cancel-by reminders: on/off + lead-time days. */
+  notify_fee_enabled?: boolean | null
+  notify_fee_days?: number | null
+  /** AI categorization master switch. Added by migration; undefined on rows
+   *  read before the column exists (treated as enabled). */
+  ai_enabled?: boolean | null
+  /** AI classifier provider: 'jev' | 'gemini' | 'off'. */
+  ai_provider?: string | null
+  /** Confidence threshold (0..1) at/above which the AI verdict auto-applies. */
+  ai_confidence_threshold?: number | null
   created_at?: string | null
   updated_at?: string | null
 }
@@ -431,3 +475,134 @@ export function liquidityBucket(type: string): LiquidityBucket {
   if (type === 'depository') return 'liquid'
   return 'semiLiquid'
 }
+
+// ── Spending plan — Supabase row shapes (see data/spendingPlan.ts) ──────────
+
+/** bills row — a recurring bill the user plans around. */
+export interface Bill {
+  id: UUID
+  name: string
+  amount: number // positive dollars
+  due_day: number // 1–31
+  category: string | null // free-text label, optional
+  is_active: boolean
+  created_at?: string | null
+}
+
+export type BillInsert = Pick<Bill, 'name' | 'amount' | 'due_day'> &
+  Partial<Pick<Bill, 'category' | 'is_active'>>
+
+/** savings_goals row — a named target with a monthly funding contribution. */
+export interface SavingsGoal {
+  id: UUID
+  name: string
+  target_amount: number // positive dollars
+  monthly_contribution: number // positive dollars
+  created_at?: string | null
+}
+
+export type SavingsGoalInsert = Pick<
+  SavingsGoal,
+  'name' | 'target_amount' | 'monthly_contribution'
+>
+
+// ── Churning tracker — Supabase row shapes (see data/churning.ts) ───────────
+
+/** churn_cards row — a credit card being tracked for bonuses/credits/fees. */
+export interface ChurnCard {
+  id: UUID
+  card_name: string
+  issuer: string | null
+  last4: string | null
+  opened_date: string | null // yyyy-MM-dd
+  annual_fee: number | null
+  annual_fee_date: string | null // yyyy-MM-dd
+  cancel_by_date: string | null // yyyy-MM-dd
+  notes: string | null
+  account_id: UUID | null // → accounts.id; links bonus spend tracking to real txns
+  created_at?: string | null
+}
+
+export type ChurnCardInsert = Pick<ChurnCard, 'card_name'> &
+  Partial<
+    Pick<
+      ChurnCard,
+      'issuer' | 'last4' | 'opened_date' | 'annual_fee' | 'annual_fee_date' | 'cancel_by_date' | 'notes' | 'account_id'
+    >
+  >
+
+export type ChurnBonusStatus = 'in_progress' | 'completed' | 'failed'
+
+/** churn_bonuses row — a signup/retention bonus with a spend requirement. */
+export interface ChurnBonus {
+  id: UUID
+  card_id: UUID
+  description: string
+  spend_required: number // positive dollars
+  spend_start_date: string | null // yyyy-MM-dd; defaults to the card's opened_date
+  spend_by_date: string // yyyy-MM-dd, NOT NULL
+  bonus_value: string | null // free text, e.g. "80k points"
+  status: ChurnBonusStatus
+  created_at?: string | null
+  // joined card name (fetchAllChurnBonuses embeds churn_cards(card_name))
+  churn_cards?: { card_name: string } | null
+}
+
+export type ChurnBonusInsert = Pick<
+  ChurnBonus,
+  'card_id' | 'description' | 'spend_required' | 'spend_by_date'
+> &
+  Partial<Pick<ChurnBonus, 'spend_start_date' | 'bonus_value' | 'status'>>
+
+export type ChurnCreditFrequency = 'annual' | 'semiannual' | 'monthly'
+
+/** How a credit got marked used: the backend auto-detector, or the user by hand. */
+export type CreditDetectionSource = 'auto' | 'manual'
+
+/** churn_credits row — a recurring card credit (airline, dining, …).
+ *  The auto-detection columns (auto_detect … period_start_date) come from the
+ *  credit-detection migration; pre-migration rows read them as undefined, and the
+ *  UI falls back to the DB defaults (auto_detect on, tolerance 0.01, remind 7d). */
+export interface ChurnCredit {
+  id: UUID
+  card_id: UUID
+  credit_name: string
+  amount: number // positive dollars, full credit value
+  frequency: ChurnCreditFrequency
+  used_amount: number // positive dollars used so far this period
+  reset_date: string | null // yyyy-MM-dd
+  notes: string | null
+  created_at?: string | null
+  // ── auto-detection ──
+  auto_detect: boolean
+  detect_merchant_keywords: string[] // lowercased keyword list the detector matches
+  detect_amount: number | null // expected statement-credit amount; null = any
+  detect_tolerance: number // |txn − detect_amount| ≤ tolerance counts as a match
+  used_at: string | null // ISO timestamp when the credit was marked used
+  detected_transaction_id: UUID | null // the txn auto-detection matched
+  detection_source: CreditDetectionSource | null
+  /** Txn ids the user dismissed — auto-detect must never re-mark these. */
+  detection_dismissed_transaction_ids: UUID[]
+  remind_days_before: number // "credits needing attention" + notification window
+  period_start_date: string | null // yyyy-MM-dd; start of the current credit period
+  // joined card name (fetchAllChurnCredits embeds churn_cards(card_name))
+  churn_cards?: { card_name: string } | null
+}
+
+export type ChurnCreditInsert = Pick<ChurnCredit, 'card_id' | 'credit_name' | 'amount'> &
+  Partial<Pick<ChurnCredit, 'frequency' | 'used_amount' | 'reset_date' | 'notes'>> &
+  Partial<
+    Pick<
+      ChurnCredit,
+      | 'auto_detect'
+      | 'detect_merchant_keywords'
+      | 'detect_amount'
+      | 'detect_tolerance'
+      | 'remind_days_before'
+      | 'period_start_date'
+      | 'used_at'
+      | 'detected_transaction_id'
+      | 'detection_source'
+      | 'detection_dismissed_transaction_ids'
+    >
+  >

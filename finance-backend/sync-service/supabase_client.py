@@ -16,10 +16,10 @@ def now_iso() -> str:
 # ponytail: per-thread client, not a shared singleton. postgrest forces
 # httpx(http2=True), so one client multiplexes every request over a single TCP
 # connection. That connection's state is not safe to touch from two threads at
-# once — and the /webhook/plaid handler runs its sync via FastAPI background
-# tasks in a threadpool, so a burst of webhooks corrupted the shared connection
-# (httpx.ReadError: [Errno 11] Resource temporarily unavailable) and dropped
-# real-time syncs. A client-per-thread never shares a connection; threadpool
+# once — and the API runs syncs via Mangum's threadpool (Starlette runs `def`
+# handlers in a threadpool), so a shared connection could be corrupted by
+# concurrent requests (httpx.ReadError: [Errno 11] Resource temporarily
+# unavailable). A client-per-thread never shares a connection; threadpool
 # threads are reused, so their clients are reused too (no per-request handshake).
 _local = threading.local()
 

@@ -19,12 +19,10 @@ vi.mock('@/data/hooks', () => ({
   useSetHidden: () => ({ mutate: vi.fn() }),
   useSetReimbursement: () => ({ mutate: vi.fn() }),
   useUpsertCategory: () => ({ mutateAsync: vi.fn(), isPending: false }),
-  // Pulled in by the CategoryPickerDialog + TxnTagEditor it renders.
+  // Pulled in by the CategoryPickerDialog it renders.
   useAccountsWithBalance: () => ({ data: [] }),
   useTransferGroupLegs: () => ({ data: null }),
-  useTags: () => ({ data: [] }),
-  useToggleTransactionTag: () => ({ mutate: vi.fn() }),
-  useUpsertTag: () => ({ mutateAsync: vi.fn() }),
+  useSetExcludeFromTotals: () => ({ mutate: vi.fn() }),
 }))
 
 beforeEach(() => mutate.mockClear())

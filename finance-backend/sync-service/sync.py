@@ -9,7 +9,7 @@ from plaid.model.transactions_sync_request import TransactionsSyncRequest
 
 import vault
 from categorizer import apply_learned, load_guess_context
-from investments import sync_investment_transactions
+from credit_detector import detect_credit_usage
 from plaid_client import fetch_institution_metadata, get_plaid_for_item
 from supabase_client import get_supabase, now_iso
 from transfers import detect_transfers, unlink_groups
@@ -20,7 +20,7 @@ STATS_KEYS = (
     'transactions_added', 'transactions_modified',
     'transactions_removed', 'accounts_updated',
 )
-BALANCE_FRESH_SECONDS = 6 * 3600   # F16: skip accounts_get on txn-only webhooks if balances younger than this
+BALANCE_FRESH_SECONDS = 6 * 3600   # F16: skip accounts_get when balances are younger than this
 LOCK_STALE_MINUTES = 15            # F7: matches the migration comment
 
 
@@ -140,9 +140,8 @@ def _upsert_new_transactions(supabase, rows: list, item_id, user_id) -> int:
 def _is_product_not_ready(exc: Exception) -> bool:
     """True if a Plaid call failed with PRODUCT_NOT_READY — the item exists but
     Plaid hasn't finished preparing its transactions yet. Expected right after
-    linking (and on an immediate backfill); Plaid fires the HISTORICAL_UPDATE
-    webhook once ready, which re-drives the sync, so this is a soft skip, not an
-    error."""
+    linking (and on an immediate backfill); a later manual refresh retries
+    the sync once Plaid is ready, so this is a soft skip, not an error."""
     if not isinstance(exc, ApiException):
         return False
     body = exc.body or '{}'
@@ -161,11 +160,11 @@ def amounts_equal(a, b) -> bool:
     return round(float(a) * 100) == round(float(b) * 100)
 
 
-# ── sync_log helpers (shared by cron + webhook, F13) ─────────────────
+# ── sync_log helpers (F13) ──────────────────────────────
 def _log_start(supabase, user_id=None) -> str:
     row = {'status': 'running'}
     if user_id:
-        row['user_id'] = user_id   # cron full-run leaves it null (global row)
+        row['user_id'] = user_id   # a global (all-users) run leaves it null
     return supabase.table('sync_log').insert(row).execute().data[0]['id']
 
 
@@ -216,54 +215,36 @@ def _balances_stale(item: dict) -> bool:
     return age.total_seconds() > BALANCE_FRESH_SECONDS
 
 
-def is_liability(account_type) -> bool:
-    """Credit/loan balances count against net worth; everything else is an asset."""
-    return account_type in ('credit', 'loan')
-
-
-def _finalize_user(supabase, user_id, full, backfill=False, item_errors=None, since=None):
+def _finalize_user(supabase, user_id, full) -> dict:
     """Post-sync per-user aggregates: link transfers, materialize recurring
-    contributions, refresh today's net-worth snapshot.
+    contributions, and auto-detect card statement credits.
 
-    Also reconstruct/fill net-worth history when either:
-      • `full` — initial link / historical update: the transaction window just
-        widened to its max, so a brand-new user gets history instead of an empty
-        "Not enough history yet" trend; or
-      • `backfill` — an app-triggered refresh (pull-to-refresh / the Balances
-        refresh button). An already-linked user's items carry cursors, so their
-        manual sync is incremental (`full` is False), but they still expect a
-        refresh to surface history — so fill it here too.
-    Cron's routine incremental sweep passes neither and stays cheap. The
-    backfill only fills missing days, so it's a no-op once history exists."""
+    Returns {'categorized', 'credits_detected'} aggregates so callers can
+    surface them in the refresh summary. A caller-provided mock may return
+    something else (or None) — run_sync guards with isinstance."""
+    stats = {'categorized': 0, 'credits_detected': 0}
     detect_transfers(supabase, user_id, full=full)
     materialize_recurring_contributions(supabase, user_id)
-    write_net_worth_snapshot(supabase, user_id)
-    if full or backfill:
-        # Lazy import: backfill_net_worth imports is_liability from this module.
-        from backfill_net_worth import DEFAULT_DAYS, backfill_user
-        try:
-            res = backfill_user(supabase, user_id, days=DEFAULT_DAYS,
-                                today=datetime.date.today(), dry_run=False)
-        except Exception:
-            # Today's snapshot already wrote above; a history backfill is a nice-
-            # to-have, so its failure must not fail the sync or, in the cron
-            # sweep, block the remaining users' finalize.
-            logger.exception('net-worth backfill failed', extra={'user_id': user_id})
-        else:
-            if not res['skipped'] and res['filled']:
-                logger.info('backfilled net-worth history', extra={
-                    'user_id': user_id, 'days_filled': res['filled'],
-                    'flat_accounts': [name for name, _ in res['flagged']]})
-
-    # Best-effort alert evaluation: insert notifications for budget /
-    # large-charge / low-balance / sync-failure rules. Alerts are a nice-to-have
-    # bolted onto the sync — a failure here must never break or fail the sync, so
-    # it's isolated. Lazy import keeps alerts.py out of sync.py's import graph.
+    # Credit auto-detection rides along on every sync, so a freshly posted
+    # statement credit is marked used without a separate pass.
+    # It must never break the sync pipeline: failures are logged, not raised.
     try:
-        from alerts import evaluate_user_alerts
-        evaluate_user_alerts(supabase, user_id, item_errors=item_errors, since=since)
+        credit_stats = detect_credit_usage(supabase, user_id) or {}
+        stats['credits_detected'] = int(credit_stats.get('detected', 0))
     except Exception:
-        logger.exception('alert evaluation failed', extra={'user_id': user_id})
+        logger.exception('credit auto-detection failed', extra={'user_id': user_id})
+    # AI categorization rides along too: rules already ran at ingestion, so
+    # this only classifies what rules/memory couldn't. Same never-break-sync
+    # contract — failures are logged and counted, never raised.
+    try:
+        from ai_categorize.pipeline import run_ai_categorization
+        ai_stats = run_ai_categorization(supabase, user_id) or {}
+        stats['categorized'] = (int(ai_stats.get('ai_applied', 0))
+                                + int(ai_stats.get('from_cache', 0))
+                                + int(ai_stats.get('rules_applied', 0)))
+    except Exception:
+        logger.exception('ai categorization failed', extra={'user_id': user_id})
+    return stats
 
 
 def _ensure_institution_branding(plaid, supabase, item):
@@ -282,14 +263,19 @@ def _ensure_institution_branding(plaid, supabase, item):
 
 
 def run_sync(user_id: str = None):
-    """Full sync. user_id=None (cron) syncs every user's items; a user_id
-    (app-triggered) syncs only that user's items."""
+    """Full sync. user_id=None syncs every user's items; a user_id
+    (app-triggered manual refresh) syncs only that user's items.
+
+    Returns a result dict with the STATS_KEYS totals plus 'items_synced',
+    'items_skipped' (PRODUCT_NOT_READY soft skips — Plaid still preparing the
+    item's history, retried on the next manual refresh), 'items_failed',
+    'categorized' and 'credits_detected' aggregates."""
     supabase = get_supabase()
 
     log_id = _log_start(supabase, user_id)
     stats = _new_stats()
-    # Bounds large_charge alerts to rows written this run (created_at >= this).
-    run_started_at = now_iso()
+    result = {**stats, 'items_synced': 0, 'items_skipped': 0, 'items_failed': 0,
+              'categorized': 0, 'credits_detected': 0}
 
     try:
         q = supabase.table('plaid_items').select('*').eq('is_active', True)
@@ -298,11 +284,8 @@ def run_sync(user_id: str = None):
         items = q.execute().data
 
         # One bad credential set (e.g. a user's trial account got closed) must
-        # not take down everyone else's cron sync — isolate failures per item.
+        # not take down everyone else's sync — isolate failures per item.
         item_errors = []
-        # Per-user errored items for the sync_failed alert; parallel to
-        # item_errors (which is a human-readable blob for the sync_log).
-        item_errors_by_user = {}
         ctx_by_user = {}
         for item in items:
             uid = item['user_id']
@@ -320,19 +303,19 @@ def run_sync(user_id: str = None):
             try:
                 plaid = get_plaid_for_item(supabase, item)
                 _ensure_institution_branding(plaid, supabase, item)
-                sync_item(plaid, supabase, item, ctx_by_user[uid], stats, uid, refresh_balances=True)
+                outcome = sync_item(plaid, supabase, item, ctx_by_user[uid], stats, uid, refresh_balances=True)
+                if outcome == 'skipped_not_ready':
+                    result['items_skipped'] += 1
+                else:
+                    result['items_synced'] += 1
             except Exception:
                 err = traceback.format_exc()
                 item_errors.append(f"{item.get('institution_name')} ({item.get('plaid_item_id')}):\n{err}")
-                item_errors_by_user.setdefault(uid, []).append({
-                    'item_id': item['id'],
-                    'plaid_item_id': item.get('plaid_item_id'),
-                    'institution_name': item.get('institution_name'),
-                })
                 logger.exception('item sync failed', extra={
                     'institution': item.get('institution_name'),
                     'plaid_item_id': item.get('plaid_item_id'), 'user_id': uid,
                 })
+        result['items_failed'] = len(item_errors)
 
         # Per-user aggregates (net worth mixes users if computed globally).
         # Transfers detect per-user, after every item synced, so a pair whose
@@ -344,24 +327,29 @@ def run_sync(user_id: str = None):
         if user_id:
             user_ids = {user_id}
         else:
-            # Cron sweep. Finalize every user with Plaid items, PLUS users whose only
-            # data is manual: a recurring contribution must materialize on schedule
-            # even when the user has no Plaid item to drive a sync, so the item-derived
-            # set alone skipped manual-only users entirely. Union in the owners
-            # of active recurring flows (service role → all users; RLS is bypassed).
+            # Sweep over every user with Plaid items, PLUS users whose only
+            # data is manual: a recurring contribution must materialize on
+            # schedule even when the user has no Plaid item to drive a sync, so
+            # the item-derived set alone skipped manual-only users entirely.
+            # Union in the owners of active recurring flows (service role → all
+            # users; RLS is bypassed).
             user_ids = {i['user_id'] for i in items}
             manual_flow_users = supabase.table('recurring_contributions') \
                 .select('user_id') \
                 .eq('is_active', True) \
                 .execute().data
             user_ids |= {r['user_id'] for r in manual_flow_users}
-        # A single user_id means this run was app-triggered (Balances refresh /
-        # pull-to-refresh) — fill net-worth history too; None is the cron sweep.
         for uid in user_ids:
-            _finalize_user(supabase, uid, full=uid in first_history,
-                           backfill=bool(user_id),
-                           item_errors=item_errors_by_user.get(uid),
-                           since=run_started_at)
+            finalize_stats = _finalize_user(supabase, uid, full=uid in first_history) or {}
+            # Tests (and reconcile.py) may substitute _finalize_user with a
+            # stub returning something else — only fold dict stats in.
+            if isinstance(finalize_stats, dict):
+                result['categorized'] += int(finalize_stats.get('categorized', 0))
+                result['credits_detected'] += int(finalize_stats.get('credits_detected', 0))
+
+        # Copy the counter totals into the result (sync_log rows take STATS_KEYS only).
+        for k in STATS_KEYS:
+            result[k] = stats[k]
 
         if item_errors:
             _log_end(supabase, log_id, 'error', stats, error='\n\n'.join(item_errors))
@@ -375,6 +363,7 @@ def run_sync(user_id: str = None):
         error_msg = traceback.format_exc()
         logger.exception('sync run failed', extra={'user_id': user_id})
         _log_end(supabase, log_id, 'error', error=error_msg)
+    return result
 
 
 def sync_item(plaid, supabase, item: dict, ctx: dict, stats: dict, user_id: str, refresh_balances: bool = True):
@@ -405,18 +394,20 @@ def sync_item(plaid, supabase, item: dict, ctx: dict, stats: dict, user_id: str,
         _sync_item_locked(plaid, supabase, item, ctx, stats, user_id, refresh_balances)
     except ApiException as exc:
         # A just-linked (or just-backfilled) item whose history Plaid hasn't
-        # finished preparing. Not a failure: skip quietly and let the
-        # HISTORICAL_UPDATE webhook re-drive the sync when Plaid is ready, so
-        # we don't log an error or fire a spurious sync_failed alert.
+        # finished preparing. Not a failure: skip quietly and let a later
+        # manual refresh re-drive the sync when Plaid is ready, so we don't
+        # log an error or fire a spurious sync_failed alert. Return a sentinel
+        # so callers don't count the skip as a completed sync.
         if _is_product_not_ready(exc):
             logger.info('item not ready yet (Plaid still preparing history); '
-                        'will sync on the HISTORICAL_UPDATE webhook',
+                        'the next manual refresh retries',
                         extra={'institution': item.get('institution_name'),
                                'item_id': item_id})
-            return
+            return 'skipped_not_ready'
         raise
     finally:
         _release_item_lock(supabase, item_id)
+    return None
 
 
 def _sync_item_locked(plaid, supabase, item, ctx, stats, user_id, refresh_balances):
@@ -424,8 +415,8 @@ def _sync_item_locked(plaid, supabase, item, ctx, stats, user_id, refresh_balanc
     item_id = item['id']
 
     # ── Accounts & balances ──────────────────────────────────────────
-    # F16: on a txn-only webhook with fresh balances, skip the Plaid
-    # accounts_get + balance rewrite and just load the id map from the DB.
+    # F16: with fresh balances, skip the Plaid accounts_get + balance rewrite
+    # and just load the id map from the DB.
     if refresh_balances:
         acct_map, acct_types = _refresh_accounts_and_balances(plaid, supabase, access_token, item_id, user_id, stats)
     else:
@@ -537,15 +528,13 @@ def _sync_item_locked(plaid, supabase, item, ctx, stats, user_id, refresh_balanc
         cursor = response['next_cursor']
         has_more = response['has_more']
 
-    # ── Investment cash movements (offset-paginated, not the sync cursor) ──
-    # Brokerage transfers (checking↔brokerage) live behind Plaid's investments
-    # product, not transactions_sync. Ingest their cash-in/out legs into the
-    # same table with a synthesized transfer signal so detect_transfers pairs
-    # them. Swallows its own not-available errors (un-consented / non-brokerage
-    # items) so it never fails an item after its transactions already synced.
-    sync_investment_transactions(plaid, supabase, access_token, item_id,
-                                 acct_map, acct_types, user_id, stats,
-                                 full=(item.get('cursor') is None))
+        # Checkpoint the cursor after every page: a backfill longer than the
+        # Lambda 15-min cap would otherwise restart from the stale cursor on
+        # the next refresh and re-pull the same pages forever. One cheap
+        # UPDATE per page makes long backfills resumable. last_synced_at still
+        # writes only once at the end of a completed run.
+        supabase.table('plaid_items').update({'cursor': cursor}) \
+            .eq('id', item_id).execute()
 
     supabase.table('plaid_items').update({
         'cursor': cursor,
@@ -620,7 +609,7 @@ def _refresh_accounts_and_balances(plaid, supabase, access_token, item_id, user_
 
 def _load_account_map(supabase, item_id) -> tuple:
     """Return ({plaid_account_id: uuid}, {uuid: account_type}) from the DB — the
-    no-Plaid-call path used on txn-only webhooks with fresh balances."""
+    no-Plaid-call path used when balances are still fresh."""
     rows = supabase.table('accounts') \
         .select('id, plaid_account_id, type') \
         .eq('plaid_item_id', item_id) \
@@ -632,7 +621,13 @@ def _load_account_map(supabase, item_id) -> tuple:
 
 
 def run_sync_for_item(plaid_item_id: str, webhook_code: str = None):
-    """Sync a single item (called from the Plaid webhook). Cursor-based, idempotent."""
+    """Sync a single item (called from the manual-refresh endpoints).
+    Cursor-based, idempotent. Returns a stats dict like run_sync.
+
+    webhook_code is a leftover from the removed webhook path: it only drives
+    the balance-refresh and first-history heuristics (INITIAL_UPDATE /
+    HISTORICAL_UPDATE); /link/claim and /backfill/{item_id} pass
+    'HISTORICAL_UPDATE' to force a full re-pull."""
     supabase = get_supabase()
 
     rows = supabase.table('plaid_items') \
@@ -642,47 +637,51 @@ def run_sync_for_item(plaid_item_id: str, webhook_code: str = None):
         .limit(1) \
         .execute().data
     if not rows:
-        return
+        return {'status': 'skipped', 'items_synced': 0, 'items_skipped': 0,
+                'items_failed': 0, **_new_stats(), 'categorized': 0,
+                'credits_detected': 0}
     item = rows[0]
     user_id = item['user_id']
     if _is_demo_item(item):
-        logger.info('skipping demo item webhook (fake token, showcase data)', extra={
+        logger.info('skipping demo item (fake token, showcase data)', extra={
             'plaid_item_id': plaid_item_id, 'user_id': user_id,
         })
-        return
+        return {'status': 'skipped', 'items_synced': 0, 'items_skipped': 0,
+                'items_failed': 0, **_new_stats(), 'categorized': 0,
+                'credits_detected': 0}
 
-    log_id = _log_start(supabase, user_id)   # F13: webhook path is now logged too
+    log_id = _log_start(supabase, user_id)
     stats = _new_stats()
-    run_started_at = now_iso()
+    result = {**stats, 'items_synced': 0, 'items_skipped': 0, 'items_failed': 0,
+              'categorized': 0, 'credits_detected': 0}
     try:
         plaid = get_plaid_for_item(supabase, item)
-        # F16: only pull balances on first-history events or when they're stale.
+        # Only pull balances on first-history events or when they're stale.
         refresh = webhook_code in (None, 'INITIAL_UPDATE', 'HISTORICAL_UPDATE') or _balances_stale(item)
-        sync_item(plaid, supabase, item, load_guess_context(user_id), stats, user_id, refresh_balances=refresh)
+        outcome = sync_item(plaid, supabase, item, load_guess_context(user_id), stats, user_id, refresh_balances=refresh)
+        if outcome == 'skipped_not_ready':
+            result['items_skipped'] = 1
+        else:
+            result['items_synced'] = 1
         # First-history events ingest transactions far beyond the incremental
         # lookback — scan full history so old transfers get linked/excluded too.
         full = webhook_code in ('INITIAL_UPDATE', 'HISTORICAL_UPDATE') or not item.get('cursor')
-        _finalize_user(supabase, user_id, full=full, since=run_started_at)
+        finalize_stats = _finalize_user(supabase, user_id, full=full) or {}
+        if isinstance(finalize_stats, dict):
+            result['categorized'] = int(finalize_stats.get('categorized', 0))
+            result['credits_detected'] = int(finalize_stats.get('credits_detected', 0))
+        for k in STATS_KEYS:
+            result[k] = stats[k]
         _log_end(supabase, log_id, 'success', stats)
-        logger.info('webhook sync complete',
+        logger.info('item sync complete',
                     extra={'plaid_item_id': plaid_item_id, **stats})
     except Exception:
         error_msg = traceback.format_exc()
-        logger.exception('webhook sync failed',
+        logger.exception('item sync failed',
                          extra={'plaid_item_id': plaid_item_id, 'user_id': user_id})
+        result['items_failed'] = 1
         _log_end(supabase, log_id, 'error', error=error_msg)
-        # The failure short-circuited before _finalize_user, so emit the
-        # sync_failed alert here directly (best-effort — never re-raise).
-        try:
-            from alerts import evaluate_user_alerts
-            evaluate_user_alerts(supabase, user_id, item_errors=[{
-                'item_id': item['id'],
-                'plaid_item_id': plaid_item_id,
-                'institution_name': item.get('institution_name'),
-            }])
-        except Exception:
-            logger.exception('sync_failed alert emit failed',
-                             extra={'plaid_item_id': plaid_item_id})
+    return result
 
 
 def materialize_recurring_contributions(supabase, user_id):
@@ -736,78 +735,6 @@ def materialize_recurring_contributions(supabase, user_id):
             logger.info('materialized recurring contributions', extra={
                 'count': len(rows), 'separate_account_id': flow['separate_account_id'],
             })
-
-
-def write_net_worth_snapshot(supabase, user_id):
-    # The current_net_worth view mirrors this math for client reads (kept as
-    # separate Python because the logic-fake test tier can't run SQL views).
-    # A semantics change here must also land in the view's migration —
-    # test_current_net_worth_view pins the parity.
-    today = datetime.date.today().isoformat()
-
-    # F8: latest balance PER account (not just today's), so an item that failed
-    # to sync today still counts. type looked up from active accounts only.
-    latest = supabase.table('latest_balances') \
-        .select('account_id, current_balance') \
-        .eq('user_id', user_id) \
-        .execute().data
-    accounts = supabase.table('accounts') \
-        .select('id, type') \
-        .eq('user_id', user_id) \
-        .eq('is_active', True) \
-        .execute().data
-    type_by_id = {a['id']: a['type'] for a in accounts}
-
-    total_assets = 0.0
-    total_liabilities = 0.0
-
-    for row in latest:
-        acct_type = type_by_id.get(row['account_id'])
-        if acct_type is None:
-            continue  # inactive / removed account
-        balance = float(row['current_balance'] or 0)
-        if is_liability(acct_type):
-            total_liabilities += max(balance, 0)
-        else:
-            total_assets += max(balance, 0)
-
-    # Manual "separate accounts": balance = sum of signed value entries.
-    sep_accounts = supabase.table('separate_accounts') \
-        .select('id, type') \
-        .eq('user_id', user_id) \
-        .eq('is_active', True) \
-        .execute().data
-
-    if sep_accounts:
-        sep_ids = [a['id'] for a in sep_accounts]
-        # F5: one query for every ledger row, summed in Python.
-        vals = supabase.table('separate_account_values') \
-            .select('separate_account_id, amount') \
-            .in_('separate_account_id', sep_ids) \
-            .execute().data
-        sums = {}
-        for v in vals:
-            sums[v['separate_account_id']] = sums.get(v['separate_account_id'], 0.0) + float(v['amount'] or 0)
-
-        for acct in sep_accounts:
-            balance = sums.get(acct['id'], 0.0)
-            if is_liability(acct['type']):
-                total_liabilities += max(balance, 0)
-            else:
-                total_assets += max(balance, 0)
-
-    supabase.table('net_worth_snapshots').upsert({
-        'user_id': user_id,
-        'date': today,
-        'total_assets': total_assets,
-        'total_liabilities': total_liabilities,
-    }, on_conflict='user_id,date').execute()
-
-    logger.info('net worth snapshot written', extra={
-        'user_id': user_id,
-        'total_assets': round(total_assets, 2),
-        'total_liabilities': round(total_liabilities, 2),
-    })
 
 
 if __name__ == '__main__':

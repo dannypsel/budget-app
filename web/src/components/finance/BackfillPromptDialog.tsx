@@ -15,7 +15,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { sbKeys } from '@/data/hooks'
-import { requestBackfill, triggerSync } from '@/data/sync'
+import { requestBackfill, triggerSync, describeSyncSummary } from '@/data/sync'
 
 interface BackfillPromptDialogProps {
   open: boolean
@@ -36,9 +36,7 @@ export function BackfillPromptDialog({
   function invalidateAfterSync() {
     qc.invalidateQueries({ queryKey: sbKeys.plaidItems })
     qc.invalidateQueries({ queryKey: sbKeys.accounts })
-    qc.invalidateQueries({ queryKey: sbKeys.currentNetWorth })
     qc.invalidateQueries({ queryKey: ['sb', 'transactions'] })
-    qc.invalidateQueries({ queryKey: ['sb', 'netWorth'] })
   }
 
   async function handleFullHistory() {
@@ -61,9 +59,10 @@ export function BackfillPromptDialog({
 
   async function handleStandardSync() {
     try {
-      await triggerSync()
+      // The sync runs inline and the promise resolves with its summary.
+      const summary = await triggerSync()
       invalidateAfterSync()
-      toast.success('Syncing… balances will update shortly.')
+      toast.success(describeSyncSummary(summary))
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Sync failed.')
     } finally {

@@ -8,7 +8,7 @@ no credentials, and no live database.
 
 Supported surface (everything sync.py / categorizer.py / transfers.py /
 write_net_worth / materialize_recurring actually use):
-    table(name).select(...).eq/.in_/.not_.in_/.is_/.gte/.lte/.or_/.order/.limit/.single().execute()
+    table(name).select(...).eq/.in_/.not_.in_/.is_/.gte/.lte/.gt/.lt/.or_/.order/.limit/.single().execute()
     table(name).insert(rows).execute()
     table(name).upsert(rows, on_conflict="a,b").execute()
     table(name).update(patch).eq(...).execute()
@@ -29,7 +29,7 @@ class _Query:
         self.op = "select"
         self.payload = None
         self.on_conflict = None
-        self.filters = []          # list of (kind, col, value); kind ∈ eq|in|notin
+        self.filters = []          # list of (kind, col, value); kind ∈ eq|in|notin|isnull|gte|lte|gt|lt|or
         self._single = False
         self._negate = False       # set by the `.not_` property for the next filter
 
@@ -84,6 +84,14 @@ class _Query:
         self.filters.append(("lte", col, val))
         return self
 
+    def gt(self, col, val):
+        self.filters.append(("gt", col, val))
+        return self
+
+    def lt(self, col, val):
+        self.filters.append(("lt", col, val))
+        return self
+
     def or_(self, expr):
         # Only used by the item-lock update; matching is handled by the eq filters,
         # so the OR is a no-op for state purposes (recorded for completeness).
@@ -124,6 +132,10 @@ class _Query:
             if kind == "gte" and not (row.get(col) is not None and row[col] >= val):
                 return False
             if kind == "lte" and not (row.get(col) is not None and row[col] <= val):
+                return False
+            if kind == "gt" and not (row.get(col) is not None and row[col] > val):
+                return False
+            if kind == "lt" and not (row.get(col) is not None and row[col] < val):
                 return False
         return True
 

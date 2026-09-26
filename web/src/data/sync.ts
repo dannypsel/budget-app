@@ -13,16 +13,53 @@ async function accessToken(): Promise<string> {
   return token
 }
 
-/** Kick off a Plaid sync for the signed-in user. Returns immediately (backend runs async). */
-export async function triggerSync(): Promise<void> {
+/** Summary returned by POST /sync/trigger once the sync has run inline.
+ *  All numeric fields are optional: the backend shape may grow, and an older
+ *  backend only returns {status:'ok'}. Callers must not assume any field. */
+export interface SyncSummary {
+  status?: string
+  items_synced?: number
+  transactions_added?: number
+  transactions_modified?: number
+}
+
+function asNumber(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined
+}
+
+/** Run a Plaid sync for the signed-in user. The backend runs the full sync
+ *  inline (Lambda) and the promise resolves with its summary once complete. */
+export async function triggerSync(): Promise<SyncSummary> {
   const token = await accessToken()
-  // warmFetch rides out the backend's cold start — /sync/trigger only kicks off an
-  // async job, so retrying a dropped/502 first hit is safe (see backend.ts).
+  // warmFetch rides out a cold start — /sync/trigger is idempotent (a second
+  // sync for the same items is a harmless no-op), so retrying a dropped/502
+  // first hit is safe (see backend.ts).
   const res = await warmFetch(`${BACKEND}/sync/trigger`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
   })
   if (!res.ok) throw new Error(`Sync failed: HTTP ${res.status}`)
+  const body = (await res.json().catch(() => ({}))) as Record<string, unknown>
+  return {
+    status: typeof body.status === 'string' ? body.status : 'ok',
+    items_synced: asNumber(body.items_synced),
+    transactions_added: asNumber(body.transactions_added),
+    transactions_modified: asNumber(body.transactions_modified),
+  }
+}
+
+/** Human-readable one-liner for a sync summary. Tolerates a summary with no
+ *  numbers (e.g. from an older fire-and-forget backend) — always returns a
+ *  complete sentence. */
+export function describeSyncSummary(summary: SyncSummary): string {
+  const added = summary.transactions_added ?? 0
+  const items = summary.items_synced ?? 0
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
+  if (added > 0 && items > 0)
+    return `Sync complete — ${plural(added, 'new transaction')} across ${plural(items, 'account')}.`
+  if (added > 0) return `Sync complete — ${plural(added, 'new transaction')}.`
+  if (items > 0) return `Sync complete — ${plural(items, 'account')} synced.`
+  return 'Sync complete.'
 }
 
 /** Reset the cursor for a newly-linked item and kick off a full historical sync. */

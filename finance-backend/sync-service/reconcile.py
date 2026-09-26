@@ -25,8 +25,8 @@ anomaly cap — the fingerprint of a truncated/partial replay — and never for
 rows older than the snapshot's own window. Anomalies log an error
 instead of deleting.
 
-Runs on the pocketlens-sync cron right after sync.py (see render.yaml), so a
-non-zero drift count means the *sync itself* is leaking — the warning log is
+Runs inside the manual-refresh chain (POST /sync/trigger → sync → reconcile),
+so a non-zero drift count means the *sync itself* is leaking — the warning log is
 the alert signal, the heal is the mitigation.
 """
 import logging
@@ -112,7 +112,7 @@ def _lock_token(supabase, item_id):
 
 def _still_owner(supabase, item_id, token) -> bool:
     """The item lock has a 15-min stale timeout (sync.py) — a long reconcile
-    can have it stolen by a webhook sync. Re-check before destructive writes."""
+    can have it stolen by a concurrent sync. Re-check before destructive writes."""
     return _lock_token(supabase, item_id) == token
 
 

@@ -1,11 +1,30 @@
 // Profile (first/last name) CRUD, direct PostgREST. The profiles row is 1:1 with the
 // auth user (id IS the auth user id), so RLS `id = auth.uid()` scopes every read/write to
 // the caller — no user_id is ever passed. The signup trigger seeds the row; clients here
-// only read and update the name. Schema is shared so iOS can adopt it unchanged.
+// only read and update the profile. Schema is shared so iOS can adopt it unchanged.
 
 import { supabase } from '@/lib/supabase'
 import type { Profile } from '@/types/domain'
 
+/** Patch for the caller's own profile: name, display currency/theme, and the
+ *  per-type reminder prefs the notify.py scheduler reads. */
+export interface ProfilePatch {
+  first_name?: string | null
+  last_name?: string | null
+  notify_email_enabled?: boolean
+  currency?: string
+  theme?: string
+  notify_credit_enabled?: boolean
+  notify_credit_days?: number
+  notify_bonus_enabled?: boolean
+  notify_bonus_days?: number
+  notify_fee_enabled?: boolean
+  notify_fee_days?: number
+  /** AI categorization prefs (Settings → AI). Keys stay in backend env. */
+  ai_enabled?: boolean
+  ai_provider?: string
+  ai_confidence_threshold?: number
+}
 /** The caller's own profile, or null if the row doesn't exist yet (maybeSingle). */
 export async function fetchMyProfile(): Promise<Profile | null> {
   const { data, error } = await supabase.from('profiles').select('*').maybeSingle()
@@ -13,11 +32,9 @@ export async function fetchMyProfile(): Promise<Profile | null> {
   return (data ?? null) as Profile | null
 }
 
-/** Update the caller's first/last name. Upserts on `id` so it also self-heals if the
+/** Update the caller's profile. Upserts on `id` so it also self-heals if the
  *  trigger-seeded row is somehow missing (id comes from the authenticated user). */
-export async function updateMyProfile(
-  patch: { first_name: string | null; last_name: string | null },
-): Promise<Profile> {
+export async function updateMyProfile(patch: ProfilePatch): Promise<Profile> {
   const { data: auth } = await supabase.auth.getUser()
   const id = auth.user?.id
   if (!id) throw new Error('Not signed in')

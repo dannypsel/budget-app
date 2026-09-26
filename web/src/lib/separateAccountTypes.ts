@@ -4,6 +4,10 @@
 
 export const SEPARATE_ACCOUNT_TYPES: { value: string; label: string }[] = [
   { value: 'depository', label: 'Cash' },
+  // 'checking' / 'savings' are written by the quick-add manual account dialog;
+  // they are depository flavors, not part of the legacy select list.
+  { value: 'checking', label: 'Checking' },
+  { value: 'savings', label: 'Savings' },
   { value: 'investment', label: 'Investments' },
   { value: 'other', label: 'Other asset' },
   { value: 'loan', label: 'Loan' },

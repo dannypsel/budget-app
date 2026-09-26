@@ -1,23 +1,17 @@
 import datetime
-import hashlib
-import hmac
 import json
 import logging
 import os
 import re
-import time
-
-import jwt
 
 from logging_setup import setup_logging
 
 setup_logging()
 logger = logging.getLogger('api')
 import plaid
-from fastapi import BackgroundTasks, Body, FastAPI, Header, HTTPException, Request
+from fastapi import Body, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
-from jwt.algorithms import ECAlgorithm
 from plaid.model.country_code import CountryCode
 from plaid.model.institutions_get_request import InstitutionsGetRequest
 from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
@@ -27,17 +21,15 @@ from plaid.model.link_token_create_request_update import LinkTokenCreateRequestU
 from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
 from plaid.model.link_token_transactions import LinkTokenTransactions
 from plaid.model.products import Products
-from plaid.model.webhook_verification_key_get_request import WebhookVerificationKeyGetRequest
 from supabase_auth.errors import AuthApiError
 
 import vault
+from envutil import _env_float
 from plaid_client import (
-    credentials_for_client_id,
     credentials_for_user,
     fetch_institution_metadata,
     get_plaid_for_creds,
     get_plaid_for_item,
-    house_creds,
     invalidate_credentials_cache,
     load_user_credentials,
 )
@@ -47,8 +39,8 @@ from sync import run_sync, run_sync_for_item
 app = FastAPI()
 
 # The web app (browser) calls POST /sync/trigger cross-origin, so it needs CORS.
-# The iOS app is native and is unaffected. /link and /webhook are top-level navigations
-# or server-to-server, so they don't rely on this. Allowed origins come from
+# The iOS app is native and is unaffected. /link and /onboard are top-level
+# navigations or server-to-server, so they don't rely on this. Allowed origins come from
 # WEB_ORIGINS (comma-separated) plus localhost dev defaults.
 _web_origins = os.environ.get('WEB_ORIGINS', '')
 CORS_ORIGINS = [o.strip() for o in _web_origins.split(',') if o.strip()] or [
@@ -62,25 +54,20 @@ app.add_middleware(
     allow_headers=['*'],
 )
 
-WEBHOOK_URL = os.environ.get('PLAID_WEBHOOK_URL')  # e.g. https://your-api.onrender.com/webhook/plaid
+# NOTE: PLAID_WEBHOOK_URL and the POST /webhook/plaid receiver were removed in
+# the 2026-09-26 Lambda rebuild (manual refresh only — the user taps refresh in
+# the app; there is no scheduler and no webhook listener to drive).
 
 # Cooldown between user-triggered full syncs (POST /backfill-all). A full sync
 # re-drains the 730d window for every bank, so it's rate-limited; the quick
 # incremental /sync/trigger is never gated.
-FULL_SYNC_COOLDOWN_DAYS = float(os.environ.get('FULL_SYNC_COOLDOWN_DAYS', '2'))
+FULL_SYNC_COOLDOWN_DAYS = _env_float('FULL_SYNC_COOLDOWN_DAYS', 2.0)
 
 # This service's own /link URL, for OAuth banks (Chase, BofA, …). Each BYO user
 # must allowlist it in their Plaid dashboard (the onboarding wizard walks them
 # through it). Unset = link tokens are created without a redirect_uri, exactly
-# as before.
-REDIRECT_URI = os.environ.get('PLAID_REDIRECT_URI')  # e.g. https://your-api.onrender.com/link
-
-# Shared secret for the server-side scheduler (Supabase pg_cron → POST
-# /internal/*). The scheduled jobs used to be a Render cron / a PC-side task
-# runner; now the database itself calls these endpoints on a schedule (see
-# supabase/migrations/20260919000000_server_side_scheduler.sql). Unset = the
-# endpoints answer 503 so a missing config is loud, not a silent no-op.
-TRIGGER_SECRET = os.environ.get('TRIGGER_SECRET')
+# as before. On AWS Lambda the deploy worker sets this to the Function URL + /link.
+REDIRECT_URI = os.environ.get('PLAID_REDIRECT_URI')  # e.g. https://<id>.lambda-url.us-east-1.on.aws/link
 
 
 def _user_id_from_token(token: str) -> str:
@@ -107,73 +94,69 @@ def _user_id_from_token(token: str) -> str:
 
 # F15: handlers below are plain `def` (not `async def`) — the Plaid/Supabase
 # SDKs are blocking, so Starlette runs `def` handlers in a threadpool instead of
-# stalling the single-worker event loop. /webhook/plaid stays async: it needs
-# the raw request body for signature verification.
+# stalling the single-worker event loop.
+
+
+def _refresh_user(user_id: str) -> dict:
+    """The full manual-refresh chain, run INLINE — no BackgroundTasks.
+
+    On AWS Lambda there is no background worker and no scheduler: the whole
+    chain runs inside the Function URL invocation and the caller gets the
+    summary back. Keep it under the 15-min Lambda cap — sync.py and
+    reconcile.py isolate failures per item, the AI pipeline caps its Brave
+    lookups, and the Plaid cursor is checkpointed per page so a truncated run
+    resumes where it left off.
+
+    Chain: Plaid transactions/sync per item → reconcile drift healing →
+    Jev AI categorization + card-credit auto-detection (inside
+    sync._finalize_user / reconcile's finalize) → in-app notifications.
+    """
+    from notify import run_notify
+    from reconcile import run_reconcile
+
+    sync_stats = run_sync(user_id) or {}
+    try:
+        drift = run_reconcile(user_id) or {}
+    except Exception:
+        logger.exception('manual refresh: reconcile failed', extra={'user_id': user_id})
+        drift = {}
+    try:
+        notify_stats = run_notify(user_ids={user_id}) or {}
+    except Exception:
+        logger.exception('manual refresh: notify failed', extra={'user_id': user_id})
+        notify_stats = {}
+
+    return {
+        'status': 'ok',
+        'items_synced': sync_stats.get('items_synced', 0),
+        'items_skipped': sync_stats.get('items_skipped', 0),
+        'items_failed': sync_stats.get('items_failed', 0),
+        'transactions_added': sync_stats.get('transactions_added', 0),
+        'transactions_modified': sync_stats.get('transactions_modified', 0),
+        'transactions_removed': sync_stats.get('transactions_removed', 0),
+        'accounts_updated': sync_stats.get('accounts_updated', 0),
+        'categorized': sync_stats.get('categorized', 0),
+        'credits_detected': sync_stats.get('credits_detected', 0),
+        'drift_healed': {k: drift.get(k, 0) for k in ('missing', 'mismatched', 'stale')},
+        'notifications': notify_stats.get('notifications', 0),
+    }
+
 
 @app.post('/sync/trigger')
-def trigger_sync(background: BackgroundTasks,
-                 authorization: str = Header(None)):
-    # Clients send the user's Supabase JWT → sync only that user.
-    # (Scheduled full syncs run sync.py directly on the cron service.)
-    if authorization:
-        user_id = _user_id_from_token(authorization)
-        background.add_task(run_sync, user_id)
-    else:
+def trigger_sync(authorization: str = Header(None)):
+    # Clients send the user's Supabase JWT → run the whole refresh chain
+    # inline and return the summary (this is the ONLY refresh path: no
+    # scheduler, no webhooks). Supabase-auth failures surface as 401/503
+    # from _user_id_from_token before anything else runs.
+    if not authorization:
         raise HTTPException(status_code=401, detail='Unauthorized')
-    return {'status': 'ok'}
+    user_id = _user_id_from_token(authorization)
+    return _refresh_user(user_id)
 
 
 @app.get('/health')
 def health():
     return {'status': 'ok'}
-
-
-# ── Server-side scheduler entry points ───────────────────────────────────────
-# Called by Supabase pg_cron via pg_net (no PC, no Render cron). Each returns
-# 202 immediately and runs the job as a background task, exactly like the
-# webhook path, so the caller's HTTP timeout never truncates a long sync.
-
-def _require_trigger_secret(provided: str | None) -> None:
-    if not TRIGGER_SECRET:
-        raise HTTPException(status_code=503, detail='TRIGGER_SECRET not configured on the API')
-    if not provided or not hmac.compare_digest(provided, TRIGGER_SECRET):
-        raise HTTPException(status_code=401, detail='invalid trigger secret')
-
-
-def run_daily_maintenance() -> None:
-    """What the old daily cron did: reconcile drift for every item, then emit
-    the spend digests if this is the morning (ET) run. Each half is isolated so
-    a reconcile failure never suppresses digests, and vice versa."""
-    from digests import DIGEST_TZ, is_digest_run, run_digests
-    from reconcile import run_reconcile
-    try:
-        run_reconcile()
-    except Exception:
-        logger.exception('daily maintenance: reconcile failed')
-    now = datetime.datetime.now(datetime.UTC)
-    if not is_digest_run(now):
-        logger.info('daily maintenance: not the morning run, skipping digests')
-        return
-    try:
-        run_digests(get_supabase(), today=now.astimezone(DIGEST_TZ).date())
-    except Exception:
-        logger.exception('daily maintenance: digests failed')
-
-
-@app.post('/internal/sync', status_code=202)
-def internal_sync(background: BackgroundTasks, x_trigger_secret: str = Header(None)):
-    """Hourly: incremental sync of every active item for every user."""
-    _require_trigger_secret(x_trigger_secret)
-    background.add_task(run_sync)
-    return {'status': 'queued', 'job': 'sync'}
-
-
-@app.post('/internal/daily', status_code=202)
-def internal_daily(background: BackgroundTasks, x_trigger_secret: str = Header(None)):
-    """Daily: reconcile every item against Plaid, then the morning digests."""
-    _require_trigger_secret(x_trigger_secret)
-    background.add_task(run_daily_maintenance)
-    return {'status': 'queued', 'job': 'daily'}
 
 
 # ── Account deletion ─────────────────────────────────────────────────────────
@@ -512,8 +495,6 @@ def link_prepare(authorization: str = Header(None), payload: dict = Body(default
             # items that have a brokerage account — not every linked bank.
             additional_consented_products=[Products('investments')],
         )
-        if WEBHOOK_URL:
-            kwargs['webhook'] = WEBHOOK_URL
         if REDIRECT_URI:
             kwargs['redirect_uri'] = REDIRECT_URI
         try:
@@ -553,8 +534,6 @@ def link_prepare(authorization: str = Header(None), payload: dict = Body(default
         # items that have a brokerage account — not every linked bank.
         additional_consented_products=[Products('investments')],
     )
-    if WEBHOOK_URL:
-        kwargs['webhook'] = WEBHOOK_URL
     if REDIRECT_URI:
         kwargs['redirect_uri'] = REDIRECT_URI
     try:
@@ -757,13 +736,13 @@ def link_exchange(payload: dict = Body(...)):
 
 
 @app.post('/link/claim')
-def link_claim(background: BackgroundTasks, payload: dict = Body(...)):
+def link_claim(payload: dict = Body(...)):
     """Plaid update-mode (reconnect) success. Unlike /link/exchange there is no
     new public_token — the item's access_token is unchanged; the user re-authed
-    to repair credentials or grant a newly requested product (investments). Verify ownership, then kick a full re-pull so any
+    to repair credentials or grant a newly requested product (investments). Verify ownership, then run a full re-pull inline so any
     newly-consented product ingests the history it couldn't serve before (e.g.
     investment cash movements). Returns the institution name for the shell's
-    success banner."""
+    success banner plus the sync stats."""
     user_id = _user_id_from_token(payload.get('access_token', ''))
     item_id = payload.get('item_id')
     if not item_id:
@@ -791,22 +770,22 @@ def link_claim(background: BackgroundTasks, payload: dict = Body(...)):
         'backfill_requested': True,
     }).eq('id', item_id).execute()
 
-    background.add_task(run_sync_for_item, rows[0]['plaid_item_id'], 'HISTORICAL_UPDATE')
-
     logger.info('item reconnected (update mode); backfill kicked',
                 extra={'item_id': item_id, 'user_id': user_id})
+    sync_stats = run_sync_for_item(rows[0]['plaid_item_id'], 'HISTORICAL_UPDATE') or {}
     return JSONResponse({
         'institution': rows[0].get('institution_name') or 'account',
         'item_id': str(rows[0]['id']),
+        'sync': sync_stats,
     })
 
 
 @app.post('/backfill/{item_id}')
-def request_backfill(item_id: str, background: BackgroundTasks,
-                     authorization: str = Header(None)):
+def request_backfill(item_id: str, authorization: str = Header(None)):
     """Reset the Plaid cursor for an item so the next sync re-fetches full
-    history (up to the 730-day window set at link time). The UI calls this
-    immediately after linking a new bank when the user chooses "Full history"."""
+    history (up to the 730-day window set at link time), then run that sync
+    INLINE and return its stats. The UI calls this immediately after linking a
+    new bank when the user chooses "Full history"."""
     user_id = _user_id_from_token(authorization)
     supabase = get_supabase()
 
@@ -833,20 +812,90 @@ def request_backfill(item_id: str, background: BackgroundTasks,
         'backfill_requested': True,
     }).eq('id', item_id).execute()
 
-    # Kick off the sync in the background (fast return to the caller).
-    background.add_task(run_sync_for_item, plaid_item_id, 'HISTORICAL_UPDATE')
+    # Run the sync inline (no background worker on Lambda) and return its
+    # stats; a >15-min backfill resumes from the checkpointed cursor because
+    # _sync_item_locked writes the cursor after every page.
+    sync_stats = run_sync_for_item(plaid_item_id, 'HISTORICAL_UPDATE') or {}
 
     logger.info('backfill requested', extra={'item_id': item_id, 'user_id': user_id})
-    return {'status': 'ok'}
+    return {'status': 'ok', 'sync': sync_stats}
+
+
+@app.post('/credits/detect')
+def detect_credits(authorization: str = Header(None)):
+    """Re-run card-credit auto-detection for the signed-in user.
+
+    Plaid syncs already run it via _finalize_user, but CSV import
+    inserts transactions via PostgREST from the web app — bypassing the
+    backend — so the app calls this endpoint after a CSV import to catch
+    newly-imported statement credits."""
+    from credit_detector import detect_credit_usage
+    user_id = _user_id_from_token(authorization)
+    try:
+        stats = detect_credit_usage(get_supabase(), user_id)
+    except Exception:
+        logger.exception('credit detection failed', extra={'user_id': user_id})
+        raise HTTPException(status_code=500, detail='credit detection failed') from None
+    return {'detected': stats['detected'], 'credits': stats['credits']}
+
+
+@app.post('/categorize/auto')
+def auto_categorize(authorization: str = Header(None)):
+    """Run the AI categorization pipeline for the signed-in user.
+
+    Plaid syncs already run it via _finalize_user, but CSV import
+    inserts transactions via PostgREST from the web app — bypassing the
+    backend — so the app calls this after a CSV import (and the Transactions
+    "Auto-categorize" button calls it on demand). Rules + merchant memory
+    always run first; the AI provider only sees what they couldn't classify.
+    Returns the pipeline stats dict."""
+    from ai_categorize.pipeline import run_ai_categorization
+    user_id = _user_id_from_token(authorization)
+    try:
+        stats = run_ai_categorization(get_supabase(), user_id)
+    except Exception:
+        logger.exception('ai categorization failed', extra={'user_id': user_id})
+        raise HTTPException(status_code=500, detail='categorization failed') from None
+    return stats
+
+
+@app.get('/categorize/status')
+def categorize_status(authorization: str = Header(None)):
+    """AI categorization status for the Settings page: user prefs plus
+    *presence* (never values) of the backend API keys. Keys stay in env."""
+    import os
+
+    from ai_categorize.merchant_search import brave_api_key
+    from ai_categorize.providers import jev_api_key
+    user_id = _user_id_from_token(authorization)
+    try:
+        rows = get_supabase().table('profiles') \
+            .select('ai_enabled, ai_provider, ai_confidence_threshold') \
+            .eq('id', user_id).execute().data or []
+        prof = rows[0] if rows else {}
+    except Exception:
+        logger.exception('categorize status failed', extra={'user_id': user_id})
+        prof = {}
+    provider = (prof.get('ai_provider')
+                or os.environ.get('AI_CLASSIFIER_PROVIDER') or 'jev')
+    return {
+        'ai_enabled': prof.get('ai_enabled', True),
+        'ai_provider': provider,
+        'ai_confidence_threshold': prof.get('ai_confidence_threshold', 0.7),
+        'jev_key_configured': bool(jev_api_key()),
+        'brave_key_configured': bool(brave_api_key()),
+    }
 
 
 @app.post('/backfill-all')
-def request_backfill_all(background: BackgroundTasks, authorization: str = Header(None)):
+def request_backfill_all(authorization: str = Header(None)):
     """Full sync: reset every active item's cursor so the next sync re-pulls the
-    full 730-day window for all of the user's linked banks. Heavier than the
+    full 730-day window for all of the user's linked banks, then run the full
+    manual-refresh chain INLINE (Plaid sync → reconcile → AI categorization →
+    credit detection → notifications) and return its summary. Heavier than the
     incremental /sync/trigger (which only fetches cursor deltas), so it's
     rate-limited to once per FULL_SYNC_COOLDOWN_DAYS. Powers the Settings
-    "Full sync" button. Returns {status:'ok'} or 429 {status:'cooldown', next_at}."""
+    "Full sync" button. Returns {status:'ok', ...} or 429 {status:'cooldown', next_at}."""
     user_id = _user_id_from_token(authorization)
     supabase = get_supabase()
 
@@ -877,11 +926,14 @@ def request_backfill_all(background: BackgroundTasks, authorization: str = Heade
 
     # One run_sync covers every item this user owns; sync_item honours
     # backfill_requested to reset the cursor even if a sync races the flag.
-    background.add_task(run_sync, user_id)
+    # Run the full refresh chain inline (no background worker on Lambda) and
+    # merge the summary into the response.
+    summary = _refresh_user(user_id)
+    summary['items'] = len(items)
 
     logger.info('full backfill requested',
                 extra={'user_id': user_id, 'items': len(items)})
-    return {'status': 'ok', 'items': len(items)}
+    return summary
 
 
 @app.delete('/items/{item_id}')
@@ -1257,143 +1309,3 @@ function loadStatus() {
 </script>
 </body>
 </html>"""
-
-
-# ── Plaid webhook (event-driven sync) ───────────────────────────────────
-
-_key_cache: dict = {}   # (plaid_client_id, kid) -> ES key
-
-
-class WebhookKeyUnavailable(Exception):
-    """Couldn't fetch the Plaid webhook-verification key — an infrastructure
-    failure (Plaid key service outage, network error), NOT a bad signature.
-
-    Kept distinct so a Plaid outage isn't silently mistaken for an invalid
-    signature: the handler 5xxes on this so Plaid retries the webhook, instead
-    of 200/401-swallowing every real webhook and halting real-time sync with no
-    signal."""
-
-
-def _webhook_plaid_for_item(item_id: str):
-    """(plaid client, plaid_client_id) for the account that owns this item.
-
-    The unverified body only *selects* which account's verification key to
-    fetch — Plaid returns a key for a kid only if it belongs to that account,
-    so a JWT signed under a different account can never verify."""
-    if item_id:
-        rows = get_supabase().table('plaid_items') \
-            .select('plaid_client_id') \
-            .eq('plaid_item_id', item_id).limit(1).execute().data
-        client_id = rows[0].get('plaid_client_id') if rows else None
-        if client_id:
-            creds = credentials_for_client_id(get_supabase(), client_id)
-            if creds:
-                return get_plaid_for_creds(creds), client_id
-    # Unknown item or no per-item credentials: legacy house account, if any.
-    house = house_creds()
-    if house:
-        return get_plaid_for_creds(house), house['plaid_client_id']
-    return None, None
-
-
-def _verification_key(plaid_client, plaid_client_id: str, kid: str):
-    cache_key = (plaid_client_id, kid)
-    if cache_key not in _key_cache:
-        try:
-            jwk = plaid_client.webhook_verification_key_get(
-                WebhookVerificationKeyGetRequest(key_id=kid)
-            ).to_dict()['key']
-        except plaid.ApiException as e:
-            # A 4xx means Plaid definitively refused this key_id (e.g. a `kid`
-            # that doesn't belong to this account) — the token is unverifiable,
-            # i.e. a bad signature; let it surface as one (caller returns False).
-            # A 5xx (or no status) is Plaid failing *us* — infra, not signature.
-            if 400 <= (e.status or 0) < 500:
-                raise
-            raise WebhookKeyUnavailable(f'key fetch failed (HTTP {e.status})') from e
-        except Exception as e:
-            # Network error / timeout reaching the Plaid key service — infra.
-            raise WebhookKeyUnavailable('key fetch failed') from e
-        _key_cache[cache_key] = ECAlgorithm.from_jwk(json.dumps(jwk))
-    return _key_cache[cache_key]
-
-
-def _verify_plaid_webhook(plaid_client, plaid_client_id: str, token: str, body: bytes) -> bool:
-    """Verify the Plaid-Verification JWT (ES256) and that it matches the body.
-
-    Returns False for a genuinely invalid signature (reject the webhook). Raises
-    WebhookKeyUnavailable when the verification key can't be fetched (infra /
-    network failure) so the caller can 5xx and let Plaid retry, rather than
-    mistaking a Plaid outage for a bad signature and silently dropping real
-    webhooks. Never returns True without a verified signature."""
-    if not token:
-        return False
-    try:
-        header = jwt.get_unverified_header(token)
-        if header.get('alg') != 'ES256':
-            return False
-        key = _verification_key(plaid_client, plaid_client_id, header['kid'])
-    except WebhookKeyUnavailable:
-        raise                       # infra failure — must not be swallowed as False
-    except Exception:
-        return False                # malformed/unknown-kid token — bad signature
-    try:
-        claims = jwt.decode(token, key=key, algorithms=['ES256'])
-        if abs(time.time() - claims['iat']) > 300:   # reject stale (>5 min)
-            return False
-        return hmac.compare_digest(
-            claims['request_body_sha256'], hashlib.sha256(body).hexdigest()
-        )
-    except Exception:
-        return False
-
-
-TRANSACTION_CODES = {
-    'SYNC_UPDATES_AVAILABLE', 'INITIAL_UPDATE', 'HISTORICAL_UPDATE', 'DEFAULT_UPDATE',
-}
-
-
-@app.post('/webhook/plaid')
-async def plaid_webhook(request: Request, background: BackgroundTasks):
-    body = await request.body()
-    try:
-        data = json.loads(body)
-    except ValueError:
-        raise HTTPException(status_code=400, detail='invalid body') from None
-
-    # Multi-account: verify against the key of the Plaid account that owns the
-    # item (the body is untrusted until the signature checks out — see
-    # _webhook_plaid_for_item).
-    plaid, plaid_client_id = _webhook_plaid_for_item(data.get('item_id'))
-    if plaid is None:
-        # No credentials able to verify this webhook (unknown item, no legacy
-        # house account) — can't authenticate it, so reject.
-        raise HTTPException(status_code=401, detail='no credentials to verify webhook')
-    try:
-        verified = _verify_plaid_webhook(
-            plaid, plaid_client_id,
-            request.headers.get('Plaid-Verification', ''), body)
-    except WebhookKeyUnavailable:
-        # Couldn't fetch the verification key — a Plaid/infra outage, not a bad
-        # signature. Log it distinctly at ERROR and 5xx so Plaid
-        # retries; a 401 here would drop a real webhook and stall sync silently.
-        logger.error('plaid webhook verification key unavailable — cannot verify, asking Plaid to retry',
-                     exc_info=True,
-                     extra={'item_id': data.get('item_id'),
-                            'webhook_type': data.get('webhook_type'),
-                            'webhook_code': data.get('webhook_code')})
-        raise HTTPException(status_code=503, detail='webhook verification key unavailable — retry') from None
-    if not verified:
-        logger.warning('plaid webhook rejected: invalid signature',
-                       extra={'item_id': data.get('item_id'),
-                              'webhook_type': data.get('webhook_type'),
-                              'webhook_code': data.get('webhook_code')})
-        raise HTTPException(status_code=401, detail='invalid webhook signature')
-
-    code = data.get('webhook_code')
-    if data.get('webhook_type') == 'TRANSACTIONS' and code in TRANSACTION_CODES:
-        item_id = data.get('item_id')
-        if item_id:
-            background.add_task(run_sync_for_item, item_id, code)   # return 200 fast; sync async
-
-    return {'status': 'ok'}

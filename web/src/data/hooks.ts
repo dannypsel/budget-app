@@ -2,56 +2,44 @@
 // Keep's original int-id queryKeys.
 
 import { useEffect, useRef } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
-// Not React Query's useMutation directly: in demo mode this wrapper turns every write
-// into the sign-up prompt (demo/demoMutation.ts). Identical outside the demo.
-import { useMutation } from '@/demo/demoMutation'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { triggerSync, backfillAll, type BackfillAllResult } from './sync'
+import { triggerSync, describeSyncSummary, backfillAll, type BackfillAllResult } from './sync'
 import * as txns from './transactions'
 import * as accts from './accounts'
-import * as budgetsApi from './budgets'
 import * as cats from './categories'
-import * as nw from './netWorth'
 import * as sep from './separateAccounts'
-import * as tagsApi from './tags'
-import * as tagRulesApi from './tagRules'
-import * as splitsApi from './splits'
 import * as transfersApi from './transfers'
 import * as recurringApi from './recurring'
-import * as savedViewsApi from './savedViews'
-import * as zbbApi from './zbb'
-import * as activityApi from './activity'
-import * as reportsApi from './reports'
 import * as categoryGroupsApi from './categoryGroups'
-import * as groupBudgetsApi from './groupBudgets'
-import * as notificationsApi from './notifications'
 import * as profileApi from './profile'
+import * as spendingPlanApi from './spendingPlan'
+import * as churningApi from './churning'
+import * as notificationsApi from './notifications'
 import { fetchPlaidItems, deleteItem as deletePlaidItem } from './plaidItems'
 import { toISODate } from '@/lib/dates'
 import type {
-  ActivityEntry,
+  BillInsert,
   Category,
   CategoryGroup,
-  NotificationPref,
+  ChurnBonusInsert,
+  ChurnCardInsert,
+  ChurnCreditInsert,
   PlaidItem,
-  SavedViewParams,
-  Tag,
+  SavingsGoalInsert,
   Transaction,
   UUID,
-  ZbbSettings,
 } from '@/types/domain'
 
 export const sbKeys = {
   categories: ['sb', 'categories'] as const,
   rules: ['sb', 'rules'] as const,
-  tagRules: ['sb', 'tagRules'] as const,
   merchantMemory: ['sb', 'merchantMemory'] as const,
   transactionsMonth: (iso: string) => ['sb', 'transactions', 'month', iso] as const,
   transactionsMonthAll: (iso: string) => ['sb', 'transactions', 'month-all', iso] as const,
+  transactionsRange: (start: string, end: string) =>
+    ['sb', 'transactions', 'range', start, end] as const,
   spendByCategory: (iso: string) => ['sb', 'transactions', 'spendByCategory', iso] as const,
-  uncategorizedSpend: (iso: string) => ['sb', 'transactions', 'uncategorizedSpend', iso] as const,
-  transferCandidates: (txnId: UUID) => ['sb', 'transactions', 'transferCandidates', txnId] as const,
   transferGroups: (iso: string) => ['sb', 'transactions', 'transferGroups', iso] as const,
   transferGroupLegs: (groupId: UUID) => ['sb', 'transactions', 'transferGroupLegs', groupId] as const,
   transferSuggestions: ['sb', 'transactions', 'transferSuggestions'] as const,
@@ -67,8 +55,6 @@ export const sbKeys = {
   // hard refresh. Nested under `accounts` so invalidating that prefix still hits both.
   accountsWithBalance: ['sb', 'accounts', 'withBalance'] as const,
   budgetLimits: ['sb', 'budgetLimits'] as const,
-  netWorth: (months?: number) => ['sb', 'netWorth', months ?? 'all'] as const,
-  currentNetWorth: ['sb', 'netWorth', 'current'] as const,
   separateAccounts: ['sb', 'separateAccounts'] as const,
   // Nested under separateAccounts so invalidating the list prefix also refreshes
   // a detail page's ledger + contributions.
@@ -76,22 +62,23 @@ export const sbKeys = {
   separateAccountContributions: (id: UUID) =>
     ['sb', 'separateAccounts', id, 'contributions'] as const,
   plaidItems: ['sb', 'plaidItems'] as const,
-  tags: ['sb', 'tags'] as const,
   recurring: ['sb', 'recurring'] as const,
-  savedViews: ['sb', 'savedViews'] as const,
-  zbbSettings: ['sb', 'zbb', 'settings'] as const,
-  zbbMonth: (year: number, month: number) => ['sb', 'zbb', 'month', year, month] as const,
-  activity: ['sb', 'activity'] as const,
-  report: (year: number, month: number) => ['sb', 'report', year, month] as const,
   categoryGroups: ['sb', 'categoryGroups'] as const,
-  groupBudgetLimits: ['sb', 'groupBudgetLimits'] as const,
-  notifications: ['sb', 'notifications'] as const,
-  notificationPrefs: ['sb', 'notificationPrefs'] as const,
   profile: ['sb', 'profile'] as const,
+  plannedIncome: ['sb', 'spendingPlan', 'plannedIncome'] as const,
+  bills: ['sb', 'spendingPlan', 'bills'] as const,
+  savingsGoals: ['sb', 'spendingPlan', 'savingsGoals'] as const,
+  churnCards: ['sb', 'churning', 'cards'] as const,
+  churnCard: (id: UUID) => ['sb', 'churning', 'cards', id] as const,
+  churnBonuses: (cardId: UUID) => ['sb', 'churning', 'bonuses', cardId] as const,
+  allChurnBonuses: ['sb', 'churning', 'bonuses', 'all'] as const,
+  churnCredits: (cardId: UUID) => ['sb', 'churning', 'credits', cardId] as const,
+  allChurnCredits: ['sb', 'churning', 'credits', 'all'] as const,
+  notifications: ['sb', 'notifications'] as const,
 }
 
 export function useCategories() {
-  return useQuery({ queryKey: sbKeys.categories, queryFn: cats.fetchCategories })
+  return useQuery({ queryKey: sbKeys.categories, queryFn: () => cats.fetchCategories() })
 }
 export function useRules() {
   return useQuery({ queryKey: sbKeys.rules, queryFn: cats.fetchRules })
@@ -105,87 +92,18 @@ export function useAddRule() {
     mutationFn: (rule: cats.NewRule) => cats.addRule(rule),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: sbKeys.rules })
-      qc.invalidateQueries({ queryKey: sbKeys.activity })
     },
   })
 }
 
-/** Delete a keyword rule; refresh the rules cache and the activity feed. */
+/** Delete a keyword rule; refresh the rules cache. */
 export function useDeleteRule() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (id: UUID) => cats.deleteRule(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: sbKeys.rules })
-      qc.invalidateQueries({ queryKey: sbKeys.activity })
     },
-  })
-}
-
-// ── Tag→category rules ──────────────────────────────────────────────
-
-export function useTagRules() {
-  return useQuery({ queryKey: sbKeys.tagRules, queryFn: tagRulesApi.fetchTagRules })
-}
-
-/** Add (or replace) a tag→category rule. When `backfill` is set, also apply the rule to every
- *  already-tagged txn — so refresh transactions (+ budget/ZBB spend) alongside the rules cache. */
-export function useAddTagRule() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: async ({
-      tagId,
-      categoryId,
-      backfill,
-    }: {
-      tagId: UUID
-      categoryId: UUID
-      backfill?: boolean
-    }) => {
-      const rule = await tagRulesApi.addTagRule(tagId, categoryId)
-      if (backfill) await tagRulesApi.applyTagRule(tagId, categoryId)
-      return rule
-    },
-    onSuccess: (_r, vars) => {
-      qc.invalidateQueries({ queryKey: sbKeys.tagRules })
-      if (vars.backfill) {
-        qc.invalidateQueries({ queryKey: ['sb', 'transactions'] })
-        qc.invalidateQueries({ queryKey: sbKeys.budgetLimits })
-        qc.invalidateQueries({ queryKey: ['sb', 'zbb'] })
-      }
-    },
-  })
-}
-
-export function useDeleteTagRule() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: (id: UUID) => tagRulesApi.deleteTagRule(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: sbKeys.tagRules }),
-  })
-}
-
-/** "Apply now": backfill every tag rule onto its already-tagged txns. Category changes ripple
- *  into budget/ZBB spend, so refresh those too (mirrors useAutoCategorizeUncategorized). */
-export function useApplyAllTagRules() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: () => tagRulesApi.applyAllTagRules(),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['sb', 'transactions'] })
-      qc.invalidateQueries({ queryKey: sbKeys.budgetLimits })
-      qc.invalidateQueries({ queryKey: ['sb', 'zbb'] })
-    },
-  })
-}
-
-/** Apply one tag's rule to one txn when the tag is attached (see TxnTagEditor). */
-export function useApplyTagRuleToTransaction() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: ({ transactionId, categoryId }: { transactionId: UUID; categoryId: UUID }) =>
-      tagRulesApi.applyTagRuleToTransaction(transactionId, categoryId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['sb', 'transactions'] }),
   })
 }
 
@@ -210,7 +128,7 @@ export function useReorderCategories() {
   })
 }
 
-/** Delete a category. Cascades its budgets/ZBB/split rows in the DB; transactions fall
+/** Delete a category. Cascades its budget/split rows in the DB; transactions fall
  *  back to uncategorized (category_id set null) — refresh everything that shows them. */
 export function useDeleteCategory() {
   const qc = useQueryClient()
@@ -219,7 +137,6 @@ export function useDeleteCategory() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: sbKeys.categories })
       qc.invalidateQueries({ queryKey: sbKeys.budgetLimits })
-      qc.invalidateQueries({ queryKey: ['sb', 'zbb'] })
       qc.invalidateQueries({ queryKey: ['sb', 'transactions'] })
     },
   })
@@ -280,40 +197,6 @@ export function useSetCategoryGroup() {
   })
 }
 
-// ── Group budget limits ───────────────────────────────────────────────────────
-
-export function useGroupBudgetLimits() {
-  return useQuery({
-    queryKey: sbKeys.groupBudgetLimits,
-    queryFn: groupBudgetsApi.fetchGroupBudgetLimits,
-  })
-}
-
-export function useSaveGroupBudget() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: ({
-      groupId,
-      monthlyLimit,
-      month,
-    }: {
-      groupId: UUID
-      monthlyLimit: number
-      month: Date
-    }) => groupBudgetsApi.saveGroupBudget(groupId, monthlyLimit, { month }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: sbKeys.groupBudgetLimits }),
-  })
-}
-
-export function useDeleteGroupBudget() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: ({ groupId, month }: { groupId: UUID; month: Date }) =>
-      groupBudgetsApi.deleteGroupBudget(groupId, { month }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: sbKeys.groupBudgetLimits }),
-  })
-}
-
 export function useMerchantMemory() {
   return useQuery({ queryKey: sbKeys.merchantMemory, queryFn: txns.fetchMerchantMemory })
 }
@@ -340,21 +223,22 @@ export function useSpendByCategory(month: Date) {
   })
 }
 
-/** Total spend for transactions with no category this month — the "ghost spending"
- *  that the category_spend view omits because it requires category_id IS NOT NULL. */
-export function useUncategorizedSpend(month: Date) {
-  return useQuery({
-    queryKey: sbKeys.uncategorizedSpend(monthKey(month)),
-    queryFn: () => txns.fetchUncategorizedSpend(month),
-  })
-}
-
 /** Month transactions including excluded/transfer rows (Transactions page, so transfers
  *  stay visible + unlinkable). Separate cache key from useTransactionsMonth. */
 export function useTransactionsMonthAll(month: Date) {
   return useQuery({
     queryKey: sbKeys.transactionsMonthAll(monthKey(month)),
     queryFn: () => txns.fetchTransactions(month, { includeExcluded: true }),
+  })
+}
+/** Transactions in an arbitrary [startISO, endISO] range (Reports page). Fetches
+ *  excluded/transfer rows too — the page applies its exclude toggles client-side
+ *  so toggling is instant. Nested under ['sb','transactions'] so mutations refresh it. */
+export function useTransactionsRange(startISO: string, endISO: string) {
+  return useQuery({
+    queryKey: sbKeys.transactionsRange(startISO, endISO),
+    queryFn: () => txns.fetchTransactionsRange(startISO, endISO, { includeExcluded: true }),
+    enabled: startISO !== '' && endISO !== '' && startISO <= endISO,
   })
 }
 export function useRecent(days: number) {
@@ -397,7 +281,7 @@ export function useAccountsWithBalance() {
   })
 }
 export function useAccounts() {
-  return useQuery({ queryKey: sbKeys.accounts, queryFn: accts.fetchAccounts })
+  return useQuery({ queryKey: sbKeys.accounts, queryFn: () => accts.fetchAccounts() })
 }
 
 /** Soft-delete a single Plaid account (sets is_active = false). The institution
@@ -408,8 +292,6 @@ export function useHideAccount() {
     mutationFn: (accountId: string) => accts.hideAccount(accountId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: sbKeys.accounts })
-      qc.invalidateQueries({ queryKey: sbKeys.currentNetWorth })
-      qc.invalidateQueries({ queryKey: ['sb', 'netWorth'] })
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not delete account'),
   })
@@ -432,50 +314,36 @@ export function usePatchAccountType() {
       accts.patchAccountType(accountId, type),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: sbKeys.accounts })
-      qc.invalidateQueries({ queryKey: sbKeys.currentNetWorth })
-      qc.invalidateQueries({ queryKey: ['sb', 'netWorth'] })
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not update account type'),
   })
 }
 
 /** Hard-delete an account and cascade its transactions. Unlinks transfer legs on other
- *  accounts first. Refreshes accounts + net worth + transactions caches. */
+ *  accounts first. Refreshes accounts + transactions caches. */
 export function useDeleteAccount() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (accountId: string) => accts.deleteAccount(accountId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: sbKeys.accounts })
-      qc.invalidateQueries({ queryKey: sbKeys.currentNetWorth })
-      qc.invalidateQueries({ queryKey: ['sb', 'netWorth'] })
       qc.invalidateQueries({ queryKey: ['sb', 'transactions'] })
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not delete account'),
   })
 }
 
-export function useBudgetLimits() {
-  return useQuery({ queryKey: sbKeys.budgetLimits, queryFn: budgetsApi.fetchBudgetLimits })
-}
-export function useNetWorth(months?: number) {
-  return useQuery({ queryKey: sbKeys.netWorth(months), queryFn: () => nw.fetchSnapshots(months) })
-}
-export function useCurrentNetWorth() {
-  return useQuery({ queryKey: sbKeys.currentNetWorth, queryFn: accts.fetchCurrentNetWorth })
-}
 export function useSeparateAccounts() {
   return useQuery({ queryKey: sbKeys.separateAccounts, queryFn: sep.fetchSeparateAccounts })
 }
 
 // ── Manual "separate" accounts — value ledger + recurring contributions ───────
 // A separate account's balance = SUM(values), so any value/contribution mutation
-// changes its balance and therefore net worth (current_net_worth folds them in).
-// Nesting the per-account keys under sbKeys.separateAccounts means invalidating
-// that prefix refreshes the list card, the detail balance, and the ledger at once.
+// changes its balance. Nesting the per-account keys under sbKeys.separateAccounts
+// means invalidating that prefix refreshes the list card, the detail balance, and
+// the ledger at once.
 function invalidateSeparateAccounts(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: sbKeys.separateAccounts })
-  qc.invalidateQueries({ queryKey: ['sb', 'netWorth'] })
 }
 
 export function useSeparateAccountValues(accountId: UUID) {
@@ -599,27 +467,22 @@ export function useDeletePlaidItem() {
       qc.invalidateQueries({ queryKey: sbKeys.plaidItems })
       qc.invalidateQueries({ queryKey: sbKeys.accounts })
       qc.invalidateQueries({ queryKey: ['sb', 'transactions'] })
-      qc.invalidateQueries({ queryKey: sbKeys.currentNetWorth })
-      qc.invalidateQueries({ queryKey: ['sb', 'netWorth'] })
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not unlink bank'),
   })
 }
 
 // ── Plaid sync trigger + post-sync refresh ───────────────────────────────────
-// /sync/trigger fires an async Plaid pull that returns immediately, so an instant
-// refetch would race the background write. Instead, invalidate everything a Plaid
-// sync can change — accounts + latest balances, the net-worth view + its snapshot
-// trend (['sb','netWorth'] prefix covers both), freshly-written transactions, and
-// plaid_items' last_synced_at — twice: soon after the trigger and again a few
-// seconds later, so a fast sync shows quickly and a slow one still lands. Shared by
-// the Sync buttons on Balances and Settings.
+// /sync/trigger runs the Plaid pull inline (Lambda) and the response carries a
+// sync summary, so the cache is invalidated immediately on success. The delayed
+// invalidations are kept as a safety net: an older fire-and-forget backend may
+// still be writing when the response lands, and a slow write then still shows
+// up. Shared by the Sync buttons on Accounts and Settings.
 const SYNC_REFRESH_DELAYS_MS = [3_000, 8_000]
 
 /** Everything a Plaid sync can change. */
 function invalidateAfterSync(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: sbKeys.accounts })
-  qc.invalidateQueries({ queryKey: ['sb', 'netWorth'] })
   qc.invalidateQueries({ queryKey: ['sb', 'transactions'] })
   qc.invalidateQueries({ queryKey: sbKeys.plaidItems })
 }
@@ -632,8 +495,12 @@ export function useTriggerSync() {
 
   return useMutation({
     mutationFn: triggerSync,
-    onSuccess: () => {
-      toast.success('Syncing… balances will update shortly.')
+    // The mutation resolves when the sync is complete, so invalidate right
+    // away and surface the returned summary; the delayed invalidations above
+    // stay as a safety net for a slow/older backend.
+    onSuccess: (summary) => {
+      toast.success(describeSyncSummary(summary))
+      invalidateAfterSync(qc)
       const refresh = () => invalidateAfterSync(qc)
       timers.current = SYNC_REFRESH_DELAYS_MS.map((ms) => setTimeout(refresh, ms))
     },
@@ -642,10 +509,10 @@ export function useTriggerSync() {
 }
 
 // ── Auto-sync on sign-in ──────────────────────────────────────────────────────
-// The scheduled sync runs server-side (Supabase pg_cron → the API). If it stalls
-// for any reason, opening the app is the fallback: once per sign-in, if any linked
-// bank hasn't synced within AUTO_SYNC_STALE_MS, kick the same incremental sync the
-// Sync button runs. Silent on failure — the scheduled path and the button remain.
+// Syncs are manual (the user taps Sync) — there is no background scheduler. If
+// a user opens the app and some linked bank hasn't synced in over an hour,
+// kick the same incremental sync the Sync button runs, once per sign-in.
+// Silent on failure — the button remains the explicit path.
 
 export const AUTO_SYNC_STALE_MS = 60 * 60 * 1000
 
@@ -674,6 +541,9 @@ export function useAutoSyncOnLogin(userId: string | null) {
       if (isSyncStale(items)) {
         triggerSync()
           .then(() => {
+            // The sync already ran inline; invalidate right away and keep the
+            // delayed passes as a safety net for a slow/older backend.
+            invalidateAfterSync(qc)
             timers.current = SYNC_REFRESH_DELAYS_MS.map((ms) =>
               setTimeout(() => invalidateAfterSync(qc), ms),
             )
@@ -683,7 +553,7 @@ export function useAutoSyncOnLogin(userId: string | null) {
     }
     // usePlaidItems polls while any bank is mid-sync; when the last one settles,
     // pull the fresh rows in. Covers slow syncs the fixed delays above miss, and
-    // syncs started by the scheduler or a webhook while the app was open.
+    // syncs started from another tab or device while the app was open.
     const syncing = items.some((i) => i.is_syncing)
     if (wasSyncing.current && !syncing) invalidateAfterSync(qc)
     wasSyncing.current = syncing
@@ -712,80 +582,12 @@ export function useBackfillAll() {
       qc.invalidateQueries({ queryKey: sbKeys.plaidItems })
       const refresh = () => {
         qc.invalidateQueries({ queryKey: sbKeys.accounts })
-        qc.invalidateQueries({ queryKey: ['sb', 'netWorth'] })
         qc.invalidateQueries({ queryKey: ['sb', 'transactions'] })
         qc.invalidateQueries({ queryKey: sbKeys.plaidItems })
       }
       timers.current = SYNC_REFRESH_DELAYS_MS.map((ms) => setTimeout(refresh, ms))
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : 'Full sync failed'),
-  })
-}
-
-export function useTags() {
-  return useQuery({ queryKey: sbKeys.tags, queryFn: tagsApi.fetchTags })
-}
-
-/** Create/rename/recolor a tag. */
-export function useUpsertTag() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: (tag: Partial<Tag> & { name: string; color: string }) =>
-      tagsApi.upsertTag(tag),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: sbKeys.tags })
-      qc.invalidateQueries({ queryKey: ['sb', 'transactions'] })
-    },
-  })
-}
-
-export function useDeleteTag() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: (id: UUID) => tagsApi.deleteTag(id),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: sbKeys.tags })
-      qc.invalidateQueries({ queryKey: ['sb', 'transactions'] })
-    },
-  })
-}
-
-/** Attach/detach a tag on a transaction; refresh the txn lists so chips update. */
-export function useToggleTransactionTag() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: ({
-      transactionId,
-      tagId,
-      attach,
-    }: {
-      transactionId: UUID
-      tagId: UUID
-      attach: boolean
-    }) =>
-      attach
-        ? tagsApi.addTagToTransaction(transactionId, tagId)
-        : tagsApi.removeTagFromTransaction(transactionId, tagId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['sb', 'transactions'] }),
-  })
-}
-
-/** Save/replace a transaction's splits (empty = clear). Refresh txn + budget/spend views. */
-export function useSetSplits() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: ({ transactionId, splits }: { transactionId: UUID; splits: splitsApi.SplitInput[] }) =>
-      splitsApi.setSplits(transactionId, splits),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['sb', 'transactions'] }),
-  })
-}
-
-/** Match candidates for linking `txn` as a transfer (opposite leg). Enabled lazily. */
-export function useTransferCandidates(txn: Transaction | null) {
-  return useQuery({
-    queryKey: sbKeys.transferCandidates(txn?.id ?? ('none' as UUID)),
-    queryFn: () => transfersApi.findTransferCandidates(txn!),
-    enabled: txn != null,
   })
 }
 
@@ -854,6 +656,17 @@ export function useSetHidden() {
   })
 }
 
+/** Include/exclude a transaction from spending-plan + spend totals via
+ *  exclude_from_totals; refresh txn lists + totals. */
+export function useSetExcludeFromTotals() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ transactionId, exclude }: { transactionId: UUID; exclude: boolean }) =>
+      txns.setExcludeFromTotals(transactionId, exclude),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['sb', 'transactions'] }),
+  })
+}
+
 /** Detected recurring series (client-side) with the user's overrides applied. */
 export function useRecurringSeries() {
   return useQuery({ queryKey: sbKeys.recurring, queryFn: recurringApi.fetchRecurringSeries })
@@ -890,30 +703,7 @@ export function useCategorizeRecurringSeries() {
   })
 }
 
-/** Named filter sets for the transactions list, persisted in Supabase. */
-export function useSavedViews() {
-  return useQuery({ queryKey: sbKeys.savedViews, queryFn: savedViewsApi.fetchSavedViews })
-}
-
-/** Save the current filter set under a name; refresh the saved-views list. */
-export function useCreateSavedView() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: ({ name, params }: { name: string; params: SavedViewParams }) =>
-      savedViewsApi.createSavedView(name, params),
-    onSuccess: () => qc.invalidateQueries({ queryKey: sbKeys.savedViews }),
-  })
-}
-
-export function useDeleteSavedView() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: (id: UUID) => savedViewsApi.deleteSavedView(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: sbKeys.savedViews }),
-  })
-}
-
-/** Import parsed CSV rows into an account; refresh txn lists, budgets, net worth. */
+/** Import parsed CSV rows into an account; refresh txn lists + accounts. */
 export function useImportTransactions() {
   const qc = useQueryClient()
   return useMutation({
@@ -922,7 +712,6 @@ export function useImportTransactions() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['sb', 'transactions'] })
       qc.invalidateQueries({ queryKey: sbKeys.accounts })
-      qc.invalidateQueries({ queryKey: ['sb', 'netWorth'] })
     },
   })
 }
@@ -941,8 +730,7 @@ export function useSetCategory() {
 }
 
 /** Mark/unmark a credit as a reimbursement (contra-expense). Changes both the flag and
- *  the offset category, which ripple into category spend, budgets, and ZBB — so refresh
- *  transactions + budgets + zbb. */
+ *  the offset category, which ripple into category spend — so refresh transactions. */
 export function useSetReimbursement() {
   const qc = useQueryClient()
   return useMutation({
@@ -958,91 +746,7 @@ export function useSetReimbursement() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['sb', 'transactions'] })
       qc.invalidateQueries({ queryKey: sbKeys.budgetLimits })
-      qc.invalidateQueries({ queryKey: ['sb', 'zbb'] })
     },
-  })
-}
-
-// ── Activity log + Undo ──────────────────────────────────────────────────────
-
-/** Newest-first activity feed (best-effort; empty if the table is briefly absent). */
-export function useActivity() {
-  return useQuery({ queryKey: sbKeys.activity, queryFn: activityApi.fetchActivity })
-}
-
-/** Undo an activity entry — apply the inverse mutation, mark it undone, then refresh
- *  the feed plus every domain an undo can touch (txns, budgets, rules, categories). */
-export function useUndoActivity() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: (entry: ActivityEntry) => activityApi.undoActivity(entry),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: sbKeys.activity })
-      qc.invalidateQueries({ queryKey: ['sb', 'transactions'] })
-      qc.invalidateQueries({ queryKey: sbKeys.budgetLimits })
-      qc.invalidateQueries({ queryKey: sbKeys.rules })
-      qc.invalidateQueries({ queryKey: sbKeys.merchantMemory })
-      qc.invalidateQueries({ queryKey: ['sb', 'zbb'] })
-    },
-  })
-}
-
-// ── Monthly reports (client-side from Supabase) ──────────────────────────────
-
-/** The monthly report for a selected year/month: stat metrics, the cumulative-vs-prior
- *  line, and split-aware category/subcategory/tag breakdowns. Computed client-side —
- *  no FastAPI. Kept briefly fresh since a month's data changes rarely mid-session. */
-export function useReport(year: number, month: number) {
-  return useQuery({
-    queryKey: sbKeys.report(year, month),
-    queryFn: () => reportsApi.fetchReport(year, month),
-    staleTime: 60 * 1000,
-  })
-}
-
-// ── Zero-sum (zero-based) budgeting ──────────────────────────────────────────
-export function useZbbSettings() {
-  return useQuery({ queryKey: sbKeys.zbbSettings, queryFn: zbbApi.fetchZbbSettings })
-}
-
-/** The viewed month's overview (rollover chain + Ready-to-Assign). */
-export function useZbbMonth(year: number, month: number) {
-  return useQuery({
-    queryKey: sbKeys.zbbMonth(year, month),
-    queryFn: () => zbbApi.fetchZbbMonth(year, month),
-  })
-}
-
-/** Every ZBB mutation can shift Ready-to-Assign across months, so refresh all zbb queries. */
-function invalidateZbb(qc: ReturnType<typeof useQueryClient>) {
-  qc.invalidateQueries({ queryKey: ['sb', 'zbb'] })
-}
-
-export function useSaveZbbSettings() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: (patch: Partial<ZbbSettings>) => zbbApi.saveZbbSettings(patch),
-    onSuccess: () => invalidateZbb(qc),
-  })
-}
-
-export function useSetZbbAssignment() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: ({ categoryId, year, month, assigned }: {
-      categoryId: UUID; year: number; month: number; assigned: number
-    }) => zbbApi.setAssignment(categoryId, year, month, assigned),
-    onSuccess: () => invalidateZbb(qc),
-  })
-}
-
-export function useZbbMoveMoney() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: ({ year, month, from, to, amount }: {
-      year: number; month: number; from: UUID; to: UUID; amount: number
-    }) => zbbApi.moveMoney(year, month, from, to, amount),
-    onSuccess: () => invalidateZbb(qc),
   })
 }
 
@@ -1058,8 +762,7 @@ export function useBulkCategorizeMerchant() {
 }
 
 /** One-tap "Auto-categorize uncategorized": apply merchant memory + keyword rules to every
- *  uncategorized txn. Resolves to the count applied. Category changes ripple into budget/ZBB
- *  spend, so refresh those too. */
+ *  uncategorized txn. Resolves to the count applied. */
 export function useAutoCategorizeUncategorized() {
   const qc = useQueryClient()
   return useMutation({
@@ -1067,72 +770,7 @@ export function useAutoCategorizeUncategorized() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['sb', 'transactions'] })
       qc.invalidateQueries({ queryKey: sbKeys.budgetLimits })
-      qc.invalidateQueries({ queryKey: ['sb', 'zbb'] })
     },
-  })
-}
-
-// ── Alerts & notifications ──────────────────────────────────────────
-// Data layer only in Phase A; the Bell inbox UI is a later phase.
-
-/** Newest-first notification inbox. */
-export function useNotifications() {
-  return useQuery({ queryKey: sbKeys.notifications, queryFn: notificationsApi.fetchNotifications })
-}
-
-/** Unread badge count, derived from the inbox query (no extra request). */
-export function useUnreadNotificationCount(): number {
-  const { data } = useNotifications()
-  return (data ?? []).filter((n) => n.read_at == null).length
-}
-
-export function useMarkNotificationRead() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: (id: UUID) => notificationsApi.markNotificationRead(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: sbKeys.notifications }),
-  })
-}
-
-export function useMarkAllNotificationsRead() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: () => notificationsApi.markAllNotificationsRead(),
-    onSuccess: () => qc.invalidateQueries({ queryKey: sbKeys.notifications }),
-  })
-}
-
-export function useDeleteNotification() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: (id: UUID) => notificationsApi.deleteNotification(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: sbKeys.notifications }),
-  })
-}
-
-export function useDeleteAllNotifications() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: () => notificationsApi.deleteAllNotifications(),
-    onSuccess: () => qc.invalidateQueries({ queryKey: sbKeys.notifications }),
-  })
-}
-
-/** The user's per-type alert preferences (thresholds + on/off). */
-export function useNotificationPrefs() {
-  return useQuery({
-    queryKey: sbKeys.notificationPrefs,
-    queryFn: notificationsApi.fetchNotificationPrefs,
-  })
-}
-
-/** Create/update one alert type's preference; refresh the prefs cache. */
-export function useUpsertNotificationPref() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: (pref: Partial<NotificationPref> & { type: string }) =>
-      notificationsApi.upsertNotificationPref(pref),
-    onSuccess: () => qc.invalidateQueries({ queryKey: sbKeys.notificationPrefs }),
   })
 }
 
@@ -1143,13 +781,50 @@ export function useMyProfile() {
   return useQuery({ queryKey: sbKeys.profile, queryFn: profileApi.fetchMyProfile })
 }
 
-/** Update the signed-in user's first/last name; refresh the profile cache. */
+/** Update the signed-in user's profile (name, currency, theme, reminder prefs,
+ *  and/or email-notification opt-in); refresh the profile cache. */
 export function useUpdateMyProfile() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (patch: { first_name: string | null; last_name: string | null }) =>
-      profileApi.updateMyProfile(patch),
+    mutationFn: (patch: profileApi.ProfilePatch) => profileApi.updateMyProfile(patch),
     onSuccess: () => qc.invalidateQueries({ queryKey: sbKeys.profile }),
+  })
+}
+
+// ── Notifications (bell inbox) ───────────────────────────────────────────────
+
+function invalidateNotifications(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ queryKey: sbKeys.notifications })
+}
+
+/** All of the caller's notifications, newest first. */
+export function useNotifications() {
+  return useQuery({ queryKey: sbKeys.notifications, queryFn: notificationsApi.fetchNotifications })
+}
+
+/** Unread count for the bell badge, derived from the notifications list (one query). */
+export function useUnreadNotificationCount(): number {
+  const { data = [] } = useNotifications()
+  return data.reduce((n, x) => n + (x.is_read ? 0 : 1), 0)
+}
+
+/** Mark one notification read. */
+export function useMarkNotificationRead() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: UUID) => notificationsApi.markNotificationRead(id),
+    onSuccess: () => invalidateNotifications(qc),
+    onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not mark read'),
+  })
+}
+
+/** Mark every unread notification read. */
+export function useMarkAllNotificationsRead() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => notificationsApi.markAllNotificationsRead(),
+    onSuccess: () => invalidateNotifications(qc),
+    onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not mark all read'),
   })
 }
 
@@ -1162,5 +837,252 @@ export function useUpdateMyProfile() {
 export function useDeleteMyAccount() {
   return useMutation({
     mutationFn: accts.deleteMyAccount,
+  })
+}
+
+// ── Spending plan ────────────────────────────────────────────────────────────
+
+/** The caller's planned monthly income (null = never set). */
+export function usePlannedIncome() {
+  return useQuery({ queryKey: sbKeys.plannedIncome, queryFn: spendingPlanApi.fetchPlannedIncome })
+}
+
+/** Save the planned monthly income; refresh the spending-plan cache. */
+export function useSavePlannedIncome() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (income: number) => spendingPlanApi.savePlannedIncome(income),
+    onSuccess: () => qc.invalidateQueries({ queryKey: sbKeys.plannedIncome }),
+  })
+}
+
+/** All of the caller's bills, soonest due-day first. */
+export function useBills() {
+  return useQuery({ queryKey: sbKeys.bills, queryFn: spendingPlanApi.fetchBills })
+}
+
+function invalidateSpendingPlan(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ queryKey: sbKeys.plannedIncome })
+  qc.invalidateQueries({ queryKey: sbKeys.bills })
+  qc.invalidateQueries({ queryKey: sbKeys.savingsGoals })
+}
+
+export function useCreateBill() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (bill: BillInsert) => spendingPlanApi.createBill(bill),
+    onSuccess: () => invalidateSpendingPlan(qc),
+  })
+}
+
+export function useUpdateBill() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: UUID; patch: Partial<BillInsert> }) =>
+      spendingPlanApi.updateBill(id, patch),
+    onSuccess: () => invalidateSpendingPlan(qc),
+  })
+}
+
+export function useSetBillActive() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, isActive }: { id: UUID; isActive: boolean }) =>
+      spendingPlanApi.setBillActive(id, isActive),
+    onSuccess: () => invalidateSpendingPlan(qc),
+  })
+}
+
+export function useDeleteBill() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: UUID) => spendingPlanApi.deleteBill(id),
+    onSuccess: () => invalidateSpendingPlan(qc),
+    onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not delete bill'),
+  })
+}
+
+/** All of the caller's savings goals, oldest first. */
+export function useSavingsGoals() {
+  return useQuery({ queryKey: sbKeys.savingsGoals, queryFn: spendingPlanApi.fetchSavingsGoals })
+}
+
+export function useCreateSavingsGoal() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (goal: SavingsGoalInsert) => spendingPlanApi.createSavingsGoal(goal),
+    onSuccess: () => invalidateSpendingPlan(qc),
+  })
+}
+
+export function useUpdateSavingsGoal() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: UUID; patch: Partial<SavingsGoalInsert> }) =>
+      spendingPlanApi.updateSavingsGoal(id, patch),
+    onSuccess: () => invalidateSpendingPlan(qc),
+  })
+}
+
+export function useDeleteSavingsGoal() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: UUID) => spendingPlanApi.deleteSavingsGoal(id),
+    onSuccess: () => invalidateSpendingPlan(qc),
+    onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not delete goal'),
+  })
+}
+
+// ── Churning tracker ─────────────────────────────────────────────────────────
+
+function invalidateChurning(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ queryKey: ['sb', 'churning'] })
+}
+
+/** All of the caller's tracked cards, newest first. */
+export function useChurnCards() {
+  return useQuery({ queryKey: sbKeys.churnCards, queryFn: churningApi.fetchChurnCards })
+}
+
+/** One card by id (detail page header). */
+export function useChurnCard(id: UUID | null) {
+  return useQuery({
+    queryKey: sbKeys.churnCard(id ?? ('none' as UUID)),
+    queryFn: () => churningApi.fetchChurnCard(id!),
+    enabled: id != null,
+  })
+}
+
+export function useCreateChurnCard() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (card: ChurnCardInsert) => churningApi.createChurnCard(card),
+    onSuccess: () => invalidateChurning(qc),
+  })
+}
+
+export function useUpdateChurnCard() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: UUID; patch: Partial<ChurnCardInsert> }) =>
+      churningApi.updateChurnCard(id, patch),
+    onSuccess: () => invalidateChurning(qc),
+  })
+}
+
+export function useDeleteChurnCard() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: UUID) => churningApi.deleteChurnCard(id),
+    onSuccess: () => invalidateChurning(qc),
+    onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not delete card'),
+  })
+}
+
+/** A card's bonuses, nearest spend-by date first. */
+export function useChurnBonuses(cardId: UUID | null) {
+  return useQuery({
+    queryKey: sbKeys.churnBonuses(cardId ?? ('none' as UUID)),
+    queryFn: () => churningApi.fetchChurnBonuses(cardId!),
+    enabled: cardId != null,
+  })
+}
+
+/** Every bonus across cards (deadlines widget). */
+export function useAllChurnBonuses() {
+  return useQuery({ queryKey: sbKeys.allChurnBonuses, queryFn: churningApi.fetchAllChurnBonuses })
+}
+
+export function useCreateChurnBonus() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (bonus: ChurnBonusInsert) => churningApi.createChurnBonus(bonus),
+    onSuccess: () => invalidateChurning(qc),
+  })
+}
+
+export function useUpdateChurnBonus() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: UUID; patch: Partial<ChurnBonusInsert> }) =>
+      churningApi.updateChurnBonus(id, patch),
+    onSuccess: () => invalidateChurning(qc),
+  })
+}
+
+export function useDeleteChurnBonus() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: UUID) => churningApi.deleteChurnBonus(id),
+    onSuccess: () => invalidateChurning(qc),
+    onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not delete bonus'),
+  })
+}
+
+/** A card's credits, soonest reset first. */
+export function useChurnCredits(cardId: UUID | null) {
+  return useQuery({
+    queryKey: sbKeys.churnCredits(cardId ?? ('none' as UUID)),
+    queryFn: () => churningApi.fetchChurnCredits(cardId!),
+    enabled: cardId != null,
+  })
+}
+
+export function useCreateChurnCredit() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (credit: ChurnCreditInsert) => churningApi.createChurnCredit(credit),
+    onSuccess: () => invalidateChurning(qc),
+  })
+}
+
+export function useUpdateChurnCredit() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: UUID; patch: Partial<ChurnCreditInsert> }) =>
+      churningApi.updateChurnCredit(id, patch),
+    onSuccess: () => invalidateChurning(qc),
+  })
+}
+
+export function useDeleteChurnCredit() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: UUID) => churningApi.deleteChurnCredit(id),
+    onSuccess: () => invalidateChurning(qc),
+    onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not delete credit'),
+  })
+}
+
+/** Every credit across the caller's cards, joined to card names (deadlines widget,
+ *  "credits needing attention" section). */
+export function useAllChurnCredits() {
+  return useQuery({ queryKey: sbKeys.allChurnCredits, queryFn: churningApi.fetchAllChurnCredits })
+}
+
+/** One transaction by id (credit auto-detection "View transaction" subtext). */
+export function useTransaction(id: UUID | null) {
+  return useQuery({
+    queryKey: ['sb', 'transactions', 'byId', id ?? ('none' as UUID)] as const,
+    queryFn: () => txns.fetchTransactionById(id!),
+    enabled: id != null,
+  })
+}
+
+/** Qualifying outflow spend for a bonus window on the card's linked account. */
+export function useBonusQualifyingSpend(
+  accountId: UUID | null,
+  startDate: string | null,
+  endDate: string | null,
+) {
+  return useQuery({
+    queryKey: ['sb', 'churning', 'qualifyingSpend', accountId, startDate, endDate] as const,
+    queryFn: () =>
+      churningApi.fetchQualifyingSpend({
+        accountId: accountId!,
+        startDate: startDate!,
+        endDate: endDate!,
+      }),
+    enabled: accountId != null && startDate != null && endDate != null,
   })
 }

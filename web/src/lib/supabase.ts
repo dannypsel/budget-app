@@ -1,5 +1,4 @@
 import { createClient } from '@supabase/supabase-js'
-import { isDemoMode } from '@/demo/demoMode'
 
 // Same Supabase project as the iOS app. The anon key is safe in the browser bundle —
 // Row Level Security scopes every row to the signed-in user (user_id = auth.uid()),
@@ -14,7 +13,7 @@ if (!url || !anonKey) {
   )
 }
 
-const client = createClient(url, anonKey, {
+export const supabase = createClient(url, anonKey, {
   auth: {
     persistSession: true,
     autoRefreshToken: true,
@@ -26,43 +25,5 @@ const client = createClient(url, anonKey, {
     // app on desktop). PKCE would tie recovery to the requesting browser's stored
     // code_verifier. App is email/password only — no OAuth — so implicit is fine.
     flowType: 'implicit',
-  },
-})
-
-// ── Demo-mode guard ──────────────────────────────────────────────────────────
-// The demo landing page seeds every query from fixtures, so no read should reach
-// PostgREST — but a page that builds its own query key (Explore) or a stray call
-// from a dialog would otherwise hit the network with the anon key. In demo mode
-// `.from()` / `.rpc()` return a chainable stub that resolves empty and never opens
-// a socket. `.auth` is untouched: the Log in / Sign up flow is real.
-type StubResult = { data: unknown; error: null; count: null; status: 200; statusText: 'OK' }
-
-// PostgREST resolves to a row array, except `.single()` / `.maybeSingle()` which
-// resolve to a single row (null here — "no such row").
-function emptyBuilder(data: unknown): unknown {
-  const result: StubResult = { data, error: null, count: null, status: 200, statusText: 'OK' }
-  return new Proxy(
-    {},
-    {
-      get(_target, prop) {
-        if (prop === 'then') {
-          return (resolve: (v: StubResult) => unknown, reject?: (e: unknown) => unknown) =>
-            Promise.resolve(result).then(resolve, reject)
-        }
-        // Every other property is a query-builder method: keep the chain going.
-        return () =>
-          prop === 'single' || prop === 'maybeSingle' ? emptyBuilder(null) : emptyBuilder(data)
-      },
-    },
-  )
-}
-
-export const supabase = new Proxy(client, {
-  get(target, prop, receiver) {
-    if (isDemoMode() && (prop === 'from' || prop === 'rpc')) {
-      return () => emptyBuilder(prop === 'from' ? [] : null)
-    }
-    const value = Reflect.get(target, prop, receiver)
-    return typeof value === 'function' ? value.bind(target) : value
   },
 })

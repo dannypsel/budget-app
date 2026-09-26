@@ -61,27 +61,32 @@ def _make_item(item_id=ITEM_UUID, user_id=USER, plaid_item_id=PLAID_ITEM_ID,
 def _wire(monkeypatch, db, *, user_id=USER, sync_calls=None):
     """Patch api to use the given FakeSupabase and a fixed user_id.
     sync_calls is an optional list that records (plaid_item_id, code) pairs
-    to verify background task was enqueued with the right args."""
+    to verify the inline sync was invoked with the right args."""
     monkeypatch.setattr(api, "get_supabase", lambda: db)
     monkeypatch.setattr(api, "_user_id_from_token", lambda t: user_id)
 
-    if sync_calls is not None:
-        def fake_sync(plaid_item_id, code):
-            sync_calls.append((plaid_item_id, code))
-        monkeypatch.setattr(api, "run_sync_for_item", fake_sync)
+    # The sync always runs inline in the endpoint now — never let it touch the
+    # network in these endpoint tests.
+    recorded = sync_calls if sync_calls is not None else []
+    def fake_sync(plaid_item_id, code):
+        recorded.append((plaid_item_id, code))
+        return {"items_synced": 1}
+    monkeypatch.setattr(api, "run_sync_for_item", fake_sync)
 
 
 # ── POST /backfill/{item_id} ─────────────────────────────────────────────────
 
 def test_backfill_returns_ok_for_owner(monkeypatch, client):
-    """200 {"status": "ok"} when the item belongs to the calling user."""
+    """200 {"status": "ok", "sync": {...}} when the item belongs to the calling user."""
     db = FakeSupabase(tables={"plaid_items": [_make_item()]})
     _wire(monkeypatch, db)
 
     resp = client.post(f"/backfill/{ITEM_UUID}",
                        headers={"Authorization": "Bearer tok"})
     assert resp.status_code == 200
-    assert resp.json() == {"status": "ok"}
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert isinstance(body["sync"], dict)
 
 
 def test_backfill_sets_cursor_none_and_flag(monkeypatch, client):
@@ -97,17 +102,19 @@ def test_backfill_sets_cursor_none_and_flag(monkeypatch, client):
     assert row["backfill_requested"] is True
 
 
-def test_backfill_enqueues_background_sync(monkeypatch, client):
-    """The endpoint kicks off run_sync_for_item with HISTORICAL_UPDATE."""
+def test_backfill_runs_sync_inline(monkeypatch, client):
+    """The endpoint runs run_sync_for_item with HISTORICAL_UPDATE inline (no
+    background tasks on Lambda) and returns its stats in the response."""
     sync_calls = []
     db = FakeSupabase(tables={"plaid_items": [_make_item()]})
     _wire(monkeypatch, db, sync_calls=sync_calls)
 
-    client.post(f"/backfill/{ITEM_UUID}",
-                headers={"Authorization": "Bearer tok"})
+    resp = client.post(f"/backfill/{ITEM_UUID}",
+                       headers={"Authorization": "Bearer tok"})
 
     assert len(sync_calls) == 1
     assert sync_calls[0] == (PLAID_ITEM_ID, "HISTORICAL_UPDATE")
+    assert resp.json()["sync"] is not None
 
 
 def test_backfill_404_when_item_not_found(monkeypatch, client):
@@ -261,9 +268,10 @@ def test_link_claim_400_without_item_id(monkeypatch, client):
 
 
 def test_link_claim_happy_path_backfills_and_returns_institution(monkeypatch, client):
-    """Owner reconnect: resets cursor + backfill flag, enqueues a HISTORICAL_UPDATE
-    re-pull, and returns the institution name for the success banner. No token
-    is exchanged — the item's access_token is untouched."""
+    """Owner reconnect: resets cursor + backfill flag, runs a HISTORICAL_UPDATE
+    re-pull inline, and returns the institution name for the success banner
+    plus the sync stats. No token is exchanged — the item's access_token is
+    untouched."""
     sync_calls = []
     db = FakeSupabase(tables={"plaid_items": [
         _make_item_named(institution_name="Chase", cursor="old-cursor"),
@@ -274,14 +282,17 @@ def test_link_claim_happy_path_backfills_and_returns_institution(monkeypatch, cl
                        json={"item_id": ITEM_UUID, "access_token": "jwt"})
 
     assert resp.status_code == 200
-    assert resp.json() == {"institution": "Chase", "item_id": str(ITEM_UUID)}
+    body = resp.json()
+    assert body["institution"] == "Chase"
+    assert body["item_id"] == str(ITEM_UUID)
+    assert isinstance(body["sync"], dict)
 
     # Full re-pull armed on the reconnected item.
     row = db.one("plaid_items", id=ITEM_UUID)
     assert row["cursor"] is None
     assert row["backfill_requested"] is True
 
-    # Background sync kicked with the Plaid item id, historical code.
+    # Sync ran inline with the Plaid item id, historical code.
     assert sync_calls == [(PLAID_ITEM_ID, "HISTORICAL_UPDATE")]
 
 

@@ -6,6 +6,7 @@ import { makeCategory, makeTxn } from '@/test/factories'
 
 const setHiddenMutate = vi.fn()
 const setReimbursementMutate = vi.fn()
+const setExcludeMutate = vi.fn()
 const upsertCategoryAsync = vi.fn()
 
 vi.mock('@/data/hooks', () => ({
@@ -18,15 +19,10 @@ vi.mock('@/data/hooks', () => ({
   useSetHidden: () => ({ mutate: setHiddenMutate }),
   useSetReimbursement: () => ({ mutate: setReimbursementMutate }),
   useUpsertCategory: () => ({ mutateAsync: upsertCategoryAsync, isPending: false }),
-  // The dialog also reads these (transfer route + account map).
+  // The dialog also reads these (transfer route + account map + ignore toggle).
   useAccountsWithBalance: () => ({ data: [] }),
   useTransferGroupLegs: () => ({ data: null }),
-  // TxnTagEditor (embedded in the dialog) reads these.
-  useTags: () => ({ data: [] }),
-  useToggleTransactionTag: () => ({ mutate: vi.fn() }),
-  useUpsertTag: () => ({ mutateAsync: vi.fn() }),
-  useTagRules: () => ({ data: [] }),
-  useApplyTagRuleToTransaction: () => ({ mutate: vi.fn() }),
+  useSetExcludeFromTotals: () => ({ mutate: setExcludeMutate }),
 }))
 
 describe('<CategoryPickerDialog>', () => {
@@ -156,12 +152,4 @@ describe('<CategoryPickerDialog>', () => {
     })
   })
 
-  it('hides Split while reimbursing (mutually exclusive)', async () => {
-    render(
-      <CategoryPickerDialog txn={makeTxn({ amount: -1500 })} open onOpenChange={() => {}} onPick={() => {}} />,
-    )
-    expect(screen.getByText('Split transaction')).toBeInTheDocument()
-    await userEvent.click(screen.getByLabelText('Reimbursement'))
-    expect(screen.queryByText('Split transaction')).not.toBeInTheDocument()
-  })
 })
