@@ -5,7 +5,7 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { expect, type Page } from '@playwright/test'
 
-export const HAS_LOCAL_STACK = !!process.env.E2E_SERVICE_ROLE_KEY && !!process.env.E2E_ANON_KEY
+export const HAS_LOCAL_STACK = !!process.env.E2E_SECRET_KEY && !!process.env.E2E_PUBLISHABLE_KEY
 
 export const SUPABASE_URL = process.env.E2E_SUPABASE_URL ?? 'http://127.0.0.1:54321'
 export const BACKEND_URL = process.env.E2E_BACKEND_URL ?? 'http://localhost:8000'
@@ -20,7 +20,7 @@ function assertLocal() {
 let _admin: SupabaseClient | undefined
 export function admin(): SupabaseClient {
   assertLocal()
-  _admin ??= createClient(SUPABASE_URL, process.env.E2E_SERVICE_ROLE_KEY!, {
+  _admin ??= createClient(SUPABASE_URL, process.env.E2E_SECRET_KEY!, {
     auth: { persistSession: false },
   })
   return _admin
@@ -105,7 +105,7 @@ export async function seedPlaidCredentials(userId: string): Promise<void> {
 }
 
 export async function accessTokenFor(user: { email: string; password: string }): Promise<string> {
-  const client = createClient(SUPABASE_URL, process.env.E2E_ANON_KEY!, {
+  const client = createClient(SUPABASE_URL, process.env.E2E_PUBLISHABLE_KEY!, {
     auth: { persistSession: false },
   })
   const { data, error } = await client.auth.signInWithPassword(user)

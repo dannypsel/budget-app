@@ -14,7 +14,7 @@ Login (in the iOS app):
     email:    demo@pocketlens.app
     password: demofinance123
 
-Requires SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY in .env (already used by the sync
+Requires SUPABASE_URL + SUPABASE_SECRET_KEY in .env (already used by the sync
 service). Service role bypasses RLS, so we stamp user_id explicitly on every row
 (client inserts normally rely on the auth.uid() default, which is null here).
 """

@@ -8,7 +8,7 @@
 #   2. cd finance-backend && supabase link --project-ref <dev-project-ref> \
 #        && supabase db push
 #   3. Copy finance-backend/sync-service/.env.example to .env (not committed)
-#      and fill in: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY
+#      and fill in: SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, SUPABASE_SECRET_KEY
 #      (from the dev project's API settings), plus Plaid / AI keys as needed.
 #   4. ./scripts/local-dev.sh
 set -euo pipefail
@@ -26,10 +26,10 @@ fi
 
 [ -n "${SUPABASE_URL:-}" ] \
   || die "SUPABASE_URL is not set. Create a dev Supabase project, run the migrations (see header), and put the API keys in finance-backend/sync-service/.env"
-[ -n "${SUPABASE_ANON_KEY:-}" ] \
-  || die "SUPABASE_ANON_KEY is not set (Supabase dashboard → Project Settings → API)."
-[ -n "${SUPABASE_SERVICE_ROLE_KEY:-}" ] \
-  || die "SUPABASE_SERVICE_ROLE_KEY is not set (Supabase dashboard → Project Settings → API)."
+[ -n "${SUPABASE_PUBLISHABLE_KEY:-}" ] \
+  || die "SUPABASE_PUBLISHABLE_KEY is not set (Supabase dashboard → Project Settings → API)."
+[ -n "${SUPABASE_SECRET_KEY:-}" ] \
+  || die "SUPABASE_SECRET_KEY is not set (Supabase dashboard → Project Settings → API)."
 case "$SUPABASE_URL" in
   *localhost*|*127.0.0.1*)
     die "SUPABASE_URL points at localhost, but local dev no longer runs Supabase via Docker. Point it at your Supabase Cloud dev project." ;;
@@ -63,14 +63,14 @@ trap cleanup EXIT INT TERM
 echo "▸ sync-service on :8000…"
 (cd finance-backend/sync-service && \
   SUPABASE_URL="$SUPABASE_URL" \
-  SUPABASE_SERVICE_ROLE_KEY="$SUPABASE_SERVICE_ROLE_KEY" \
+  SUPABASE_SECRET_KEY="$SUPABASE_SECRET_KEY" \
   CREDENTIALS_ENC_KEY="$CREDENTIALS_ENC_KEY" \
   "$UVICORN" api:app --host 0.0.0.0 --port 8000) &
 
 echo "▸ web on :5173…"
 (cd web && \
   VITE_SUPABASE_URL="$SUPABASE_URL" \
-  VITE_SUPABASE_ANON_KEY="$SUPABASE_ANON_KEY" \
+  VITE_SUPABASE_PUBLISHABLE_KEY="$SUPABASE_PUBLISHABLE_KEY" \
   VITE_BACKEND_URL=http://localhost:8000 \
   npm run dev) &
 

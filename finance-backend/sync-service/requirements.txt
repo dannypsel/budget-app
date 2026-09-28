@@ -1,5 +1,5 @@
 plaid-python>=14.0.0
-supabase>=2.0.0
+supabase>=2.16.0  # 2.16+ supports the new sb_secret_/sb_publishable_ Supabase API key format
 python-dotenv>=1.0.0
 fastapi>=0.110.0
 uvicorn>=0.27.0

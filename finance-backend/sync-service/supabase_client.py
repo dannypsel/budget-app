@@ -29,7 +29,7 @@ def get_supabase() -> Client:
     if client is None:
         client = create_client(
             os.environ['SUPABASE_URL'],
-            os.environ['SUPABASE_SERVICE_ROLE_KEY']
+            os.environ['SUPABASE_SECRET_KEY']
         )
         _local.client = client
     return client

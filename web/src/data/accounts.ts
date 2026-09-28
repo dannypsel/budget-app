@@ -151,7 +151,7 @@ export async function deleteAccount(accountId: string): Promise<void> {
 }
 
 /** Permanently delete the signed-in user's entire account and all their data.
- *  Calls DELETE /account on the backend, which uses the service-role admin API
+ *  Calls DELETE /account on the backend, which uses the secret-key admin API
  *  to delete the auth.users row — cascading to every user-owned table
  *  (transactions, categories, budgets, etc.) via the on-delete-cascade FKs
  *  added in 20260704000000_multi_user.sql. This is irreversible. */

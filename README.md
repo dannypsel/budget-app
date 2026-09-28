@@ -116,7 +116,7 @@ supabase link --project-ref <dev-project-ref>   # your Cloud dev project
 supabase db push                          # apply migrations
 cd ..
 cp finance-backend/sync-service/.env.example finance-backend/sync-service/.env
-# …fill in SUPABASE_URL / SUPABASE_ANON_KEY / SUPABASE_SERVICE_ROLE_KEY (dev project API settings)
+# …fill in SUPABASE_URL / SUPABASE_PUBLISHABLE_KEY / SUPABASE_SECRET_KEY (dev project API settings)
 ./scripts/local-dev.sh                    # uvicorn :8000 + vite :5173
 ```
 
@@ -159,7 +159,7 @@ Sync service (`finance-backend/sync-service/.env`):
 | Variable | Required | What it is |
 |---|---|---|
 | `SUPABASE_URL` | yes | Supabase project URL. |
-| `SUPABASE_SERVICE_ROLE_KEY` | yes | Service-role key. Server-side only — bypasses RLS. |
+| `SUPABASE_SECRET_KEY` | yes | Service-role key. Server-side only — bypasses RLS. |
 | `CREDENTIALS_ENC_KEY` | yes | Fernet key encrypting Plaid secrets + access tokens at rest. Keep it safe — losing it orphans every stored secret. Generate: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `WEB_ORIGINS` | yes | Comma-separated CORS allowlist for the web app, scheme included. On AWS Lambda this must include the CloudFront origin serving the web app. |
 | `PLAID_CLIENT_ID` / `PLAID_SECRET` / `PLAID_ENV` | no | Server-wide Plaid credentials for the household (the only Plaid credentials — the per-user credentials card was removed). |
@@ -179,7 +179,7 @@ Web build (root `.env`, baked in at build time — public, no secrets):
 | Variable | What it is |
 |---|---|
 | `VITE_SUPABASE_URL` | Supabase project URL. |
-| `VITE_SUPABASE_ANON_KEY` | Supabase anon (publishable) key. |
+| `VITE_SUPABASE_PUBLISHABLE_KEY` | Supabase publishable key (`sb_publishable_...`). |
 | `VITE_BACKEND_URL` | Sync-service API URL. |
 | `VITE_API_BASE_URL` | Same API URL. |
 

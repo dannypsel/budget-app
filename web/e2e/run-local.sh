@@ -21,8 +21,8 @@ if [ -f "$REPO_ROOT/finance-backend/sync-service/.env" ]; then
   . "$REPO_ROOT/finance-backend/sync-service/.env"
   set +a
 fi
-[ -n "${SUPABASE_URL:-}" ] && [ -n "${SUPABASE_ANON_KEY:-}" ] && [ -n "${SUPABASE_SERVICE_ROLE_KEY:-}" ] \
-  || { echo "SUPABASE_URL / SUPABASE_ANON_KEY / SUPABASE_SERVICE_ROLE_KEY not set — see scripts/local-dev.sh header"; exit 1; }
+[ -n "${SUPABASE_URL:-}" ] && [ -n "${SUPABASE_PUBLISHABLE_KEY:-}" ] && [ -n "${SUPABASE_SECRET_KEY:-}" ] \
+  || { echo "SUPABASE_URL / SUPABASE_PUBLISHABLE_KEY / SUPABASE_SECRET_KEY not set — see scripts/local-dev.sh header"; exit 1; }
 
 curl -sf http://localhost:8000/health >/dev/null \
   || { echo "sync-service not on :8000 — run ./scripts/local-dev.sh first"; exit 1; }
@@ -30,8 +30,8 @@ curl -sf http://localhost:5173 >/dev/null \
   || { echo "vite not on :5173 — run ./scripts/local-dev.sh first"; exit 1; }
 
 export E2E_SUPABASE_URL="$SUPABASE_URL"
-export E2E_ANON_KEY="$SUPABASE_ANON_KEY"
-export E2E_SERVICE_ROLE_KEY="$SUPABASE_SERVICE_ROLE_KEY"
+export E2E_PUBLISHABLE_KEY="$SUPABASE_PUBLISHABLE_KEY"
+export E2E_SECRET_KEY="$SUPABASE_SECRET_KEY"
 export E2E_BACKEND_URL="http://localhost:8000"
 
 npx playwright test signup isolation wizard "$@"

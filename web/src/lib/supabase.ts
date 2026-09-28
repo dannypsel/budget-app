@@ -1,19 +1,19 @@
 import { createClient } from '@supabase/supabase-js'
 
-// Same Supabase project as the iOS app. The anon key is safe in the browser bundle —
+// Same Supabase project as the iOS app. The publishable key is safe in the browser bundle —
 // Row Level Security scopes every row to the signed-in user (user_id = auth.uid()),
 // exactly as the iOS app relies on (PocketLens/Config/Supabase.swift).
 const url = import.meta.env.VITE_SUPABASE_URL as string
-const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string
+const publishableKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string
 
-if (!url || !anonKey) {
+if (!url || !publishableKey) {
   // Surface a clear error instead of a cryptic network failure later.
   throw new Error(
-    'Missing VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY. Copy web/.env.example to web/.env.',
+    'Missing VITE_SUPABASE_URL / VITE_SUPABASE_PUBLISHABLE_KEY. Copy web/.env.example to web/.env.',
   )
 }
 
-export const supabase = createClient(url, anonKey, {
+export const supabase = createClient(url, publishableKey, {
   auth: {
     persistSession: true,
     autoRefreshToken: true,

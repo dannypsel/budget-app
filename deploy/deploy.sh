@@ -8,7 +8,7 @@
 #
 # Usage:
 #   S3_BUCKET=my-bucket CLOUDFRONT_DIST_ID=E123ABC \
-#   VITE_SUPABASE_URL=https://xyz.supabase.co VITE_SUPABASE_ANON_KEY=eyJ... \
+#   VITE_SUPABASE_URL=https://xyz.supabase.co VITE_SUPABASE_PUBLISHABLE_KEY=sb_publishable_... \
 #   ./deploy/deploy.sh
 #
 # Optional overrides: AWS_REGION (default us-east-1), ECR_REPO (default budget-api),
@@ -26,7 +26,7 @@ LAMBDA_FUNCTION="${LAMBDA_FUNCTION:-budget-api}"
 S3_BUCKET="${S3_BUCKET:-}"
 CLOUDFRONT_DIST_ID="${CLOUDFRONT_DIST_ID:-}"
 VITE_SUPABASE_URL="${VITE_SUPABASE_URL:-}"
-VITE_SUPABASE_ANON_KEY="${VITE_SUPABASE_ANON_KEY:-}"
+VITE_SUPABASE_PUBLISHABLE_KEY="${VITE_SUPABASE_PUBLISHABLE_KEY:-}"
 
 fail() { echo "ERROR: $*" >&2; exit 1; }
 step() { echo; echo "==> $*"; }
@@ -34,7 +34,7 @@ step() { echo; echo "==> $*"; }
 [ -n "$S3_BUCKET" ]          || fail "S3_BUCKET is not set (the S3 bucket created in SETUP.md step 5)."
 [ -n "$CLOUDFRONT_DIST_ID" ] || fail "CLOUDFRONT_DIST_ID is not set (the CloudFront distribution from SETUP.md step 6)."
 [ -n "$VITE_SUPABASE_URL" ]  || fail "VITE_SUPABASE_URL is not set (Supabase project URL, e.g. https://xyz.supabase.co)."
-[ -n "$VITE_SUPABASE_ANON_KEY" ] || fail "VITE_SUPABASE_ANON_KEY is not set (Supabase anon public key)."
+[ -n "$VITE_SUPABASE_PUBLISHABLE_KEY" ] || fail "VITE_SUPABASE_PUBLISHABLE_KEY is not set (Supabase publishable key, sb_publishable_...)."
 
 command -v aws    >/dev/null || fail "aws CLI not found — install AWS CLI v2 and run 'aws configure'."
 command -v docker >/dev/null || fail "docker not found — install Docker Desktop (or the Docker engine)."
@@ -95,7 +95,7 @@ step "5/7 — building the web frontend"
   # Vite bakes these in at build time — they cannot be changed without rebuilding.
   VITE_BACKEND_URL="$FUNC_URL" \
   VITE_SUPABASE_URL="$VITE_SUPABASE_URL" \
-  VITE_SUPABASE_ANON_KEY="$VITE_SUPABASE_ANON_KEY" \
+  VITE_SUPABASE_PUBLISHABLE_KEY="$VITE_SUPABASE_PUBLISHABLE_KEY" \
   npm run build
 )
 

@@ -25,7 +25,7 @@ deploy.sh
   ├─ 3. aws lambda wait function-updated (fail fast if the update breaks)
   ├─ 4. read the Function URL via get-function-url-config
   ├─ 5. build web/ with VITE_BACKEND_URL=<Function URL>,
-  │      VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY from env
+  │      VITE_SUPABASE_URL / VITE_SUPABASE_PUBLISHABLE_KEY from env
   │      (Vite bakes these in at build time — changing them needs a rebuild)
   ├─ 6. aws s3 sync web/dist/ s3://$S3_BUCKET --delete
   └─ 7. CloudFront invalidation /*  (so the new index.html/assets go live)
@@ -36,7 +36,7 @@ Invoke it with the required env vars (see `deploy.sh` header and
 
 ```bash
 S3_BUCKET=... CLOUDFRONT_DIST_ID=... \
-VITE_SUPABASE_URL=... VITE_SUPABASE_ANON_KEY=... \
+VITE_SUPABASE_URL=... VITE_SUPABASE_PUBLISHABLE_KEY=... \
 ./deploy/deploy.sh
 ```
 

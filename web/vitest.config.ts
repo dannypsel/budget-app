@@ -20,7 +20,7 @@ export default defineConfig({
     // Supabase client reads these at import; provide test values so it doesn't throw.
     env: {
       VITE_SUPABASE_URL: 'http://localhost:54321',
-      VITE_SUPABASE_ANON_KEY: 'test-anon-key',
+      VITE_SUPABASE_PUBLISHABLE_KEY: 'test-anon-key',
       VITE_BACKEND_URL: 'http://localhost:8000',
     },
   },

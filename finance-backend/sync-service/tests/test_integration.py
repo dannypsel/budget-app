@@ -10,7 +10,7 @@ Run locally:
     cd finance-backend && supabase start
     cd sync-service && eval "$(cd ../supabase >/dev/null; \\
         supabase status -o env | sed 's/^/export /; s/API_URL/SUPABASE_URL/; \\
-        s/ANON_KEY/SUPABASE_ANON_KEY/; s/SERVICE_ROLE_KEY/SUPABASE_SERVICE_ROLE_KEY/')"
+        s/ANON_KEY/SUPABASE_PUBLISHABLE_KEY/; s/SERVICE_ROLE_KEY/SUPABASE_SECRET_KEY/')"
     pytest tests/test_integration.py
 
 If the SUPABASE_* env vars are unset the whole module is skipped, so the fast
@@ -29,8 +29,8 @@ except Exception:  # pragma: no cover - supabase always present via requirements
     create_client = None
 
 URL = os.environ.get("SUPABASE_URL")
-ANON = os.environ.get("SUPABASE_ANON_KEY")
-SERVICE = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+ANON = os.environ.get("SUPABASE_PUBLISHABLE_KEY")
+SERVICE = os.environ.get("SUPABASE_SECRET_KEY")
 
 _LOCAL = URL and ("127.0.0.1" in URL or "localhost" in URL)
 
@@ -41,7 +41,7 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(
         not (create_client and URL and ANON and SERVICE and _LOCAL),
-        reason="local Supabase not configured (set SUPABASE_URL/ANON/SERVICE_ROLE_KEY to a 127.0.0.1 stack)",
+        reason="local Supabase not configured (set SUPABASE_URL/PUBLISHABLE/SECRET_KEY to a 127.0.0.1 stack)",
     ),
 ]
 

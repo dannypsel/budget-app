@@ -6,7 +6,7 @@ After setup, every deploy is just:
 ```bash
 S3_BUCKET=<your bucket> CLOUDFRONT_DIST_ID=<your distribution id> \
 VITE_SUPABASE_URL=https://<your-project>.supabase.co \
-VITE_SUPABASE_ANON_KEY=<your anon key> \
+VITE_SUPABASE_PUBLISHABLE_KEY=<your-publishable-key> \
 ./deploy/deploy.sh
 ```
 
@@ -77,7 +77,7 @@ dashboard; generation commands are given where needed).
 | Variable | Value / how to get it |
 |---|---|
 | `SUPABASE_URL` | Supabase dashboard → Project Settings → API → Project URL (e.g. `https://xyz.supabase.co`) |
-| `SUPABASE_SERVICE_ROLE_KEY` | Same page → `service_role` key (the **secret** one — never put this in the frontend) |
+| `SUPABASE_SECRET_KEY` | Same page → **secret** key (`sb_secret_...` — never put this in the frontend) |
 | `CREDENTIALS_ENC_KEY` | Fernet key encrypting Plaid tokens at rest. Generate: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `WEB_ORIGINS` | Comma-separated list of origins allowed to call the API from a browser. **Must include your CloudFront origin** (e.g. `https://d1234abcdef.cloudfront.net`) — that's where the web app lives. Add `http://localhost:5173` too if you want local `vite dev` to keep working. |
 | `PLAID_CLIENT_ID` | Plaid dashboard → API → Keys |
@@ -258,9 +258,9 @@ The deploy script needs AWS permissions. Create a **dedicated IAM user**
 1. **Keys** — Supabase dashboard → your project → **Project Settings → API**:
    - **Project URL** → `SUPABASE_URL` (Lambda env, step 3) and
      `VITE_SUPABASE_URL` (deploy-time env for `deploy.sh`).
-   - **anon public key** → `VITE_SUPABASE_ANON_KEY` (deploy-time env). Safe
+   - **publishable key** (`sb_publishable_...`) → `VITE_SUPABASE_PUBLISHABLE_KEY` (deploy-time env). Safe
      for the browser — it's gated by Row Level Security.
-   - **service_role secret key** → `SUPABASE_SERVICE_ROLE_KEY` (Lambda env
+   - **secret key** (`sb_secret_...`) → `SUPABASE_SECRET_KEY` (Lambda env
      only — full database access, never in the frontend).
 2. **Migrations** — unchanged from local dev. From the repo, link the project
    once and push:
@@ -278,7 +278,7 @@ The deploy script needs AWS permissions. Create a **dedicated IAM user**
 S3_BUCKET=<bucket from step 5> \
 CLOUDFRONT_DIST_ID=<id from step 6> \
 VITE_SUPABASE_URL=https://<ref>.supabase.co \
-VITE_SUPABASE_ANON_KEY=<anon key> \
+VITE_SUPABASE_PUBLISHABLE_KEY=<your-publishable-key> \
 ./deploy/deploy.sh
 ```
 

@@ -10,7 +10,7 @@ import threading
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ.setdefault('SUPABASE_URL', 'https://example.supabase.co')
-os.environ.setdefault('SUPABASE_SERVICE_ROLE_KEY', 'test-service-role-key')
+os.environ.setdefault('SUPABASE_SECRET_KEY', 'test-service-role-key')
 
 # The test only ever constructs a client object — it never issues requests.
 # supabase-auth builds its httpx client with trust_env, and some sandboxes set
