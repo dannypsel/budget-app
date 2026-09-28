@@ -25,7 +25,7 @@ Concrete names for this repo:
 | AWS region / account | `us-east-1` / `656192943270` |
 | ECR image | `656192943270.dkr.ecr.us-east-1.amazonaws.com/budget-api:latest` |
 | Lambda function | `budget-api` |
-| API Gateway (HTTP API) | named `budget-api`, `$default` stage |
+| API Gateway (HTTP API) | named `budget-api`, `$default` stage → `https://dlnonm6ehd.execute-api.us-east-1.amazonaws.com` |
 | S3 bucket | `dara-budget-web-2026` |
 | CloudFront | `E1C1I0FMZGWO4D` → `https://duj1bo2j1usp2.cloudfront.net` |
 | Backend dir (Docker build context) | `finance-backend/sync-service` |
@@ -55,7 +55,7 @@ aws lambda update-function-code --region us-east-1 \
 
 aws lambda wait function-updated --region us-east-1 --function-name budget-api
 
-curl -s <backend-url>/health   # expect {"status":"ok"}
+curl -s https://dlnonm6ehd.execute-api.us-east-1.amazonaws.com/health   # expect {"status":"ok"}
 ```
 
 No frontend rebuild needed. (`--provenance=false` matters: without it the
@@ -66,7 +66,7 @@ image manifest can confuse Lambda.)
 ```bash
 cd web
 
-VITE_BACKEND_URL="<backend-url>" \
+VITE_BACKEND_URL="https://dlnonm6ehd.execute-api.us-east-1.amazonaws.com" \
 VITE_SUPABASE_URL="https://xyxcwpzksmhlnuhkzonx.supabase.co" \
 VITE_SUPABASE_PUBLISHABLE_KEY="<sb_publishable_... from Supabase dashboard → Project Settings → API>" \
 npm run build
@@ -77,8 +77,7 @@ aws cloudfront create-invalidation --distribution-id E1C1I0FMZGWO4D --paths "/*"
 ```
 
 Wait ~1 minute, then hard-refresh the site. No Docker, no Lambda.
-(`<backend-url>` = the API Gateway URL — see "I forgot the backend URL".
-Never put the **secret** key in a `VITE_*` variable; it would ship to every
+(Never put the **secret** key in a `VITE_*` variable; it would ship to every
 browser.)
 
 ## I changed both
