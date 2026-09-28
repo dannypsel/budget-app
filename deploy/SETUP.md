@@ -110,16 +110,47 @@ dashboard; generation commands are given where needed).
   background email digest was dropped with the scheduler; in-app notifications
   are evaluated at refresh time instead.
 
-## 4. Create the Function URL (Auth type NONE)
+## 4. Expose the backend over HTTPS (API Gateway HTTP API)
 
-The Function URL is the public HTTPS address of the backend. The frontend is
-built with this URL baked in (`VITE_BACKEND_URL`).
+> **Do not use a Lambda Function URL in this AWS account.** Function URLs
+> return `403 AccessDeniedException` on every invocation here, even with the
+> correct `lambda:InvokeFunctionUrl` resource policy (verified in `us-east-1`
+> and `us-west-2` with trivial test functions on 2026-09-27). The backend is
+> therefore exposed through an **API Gateway HTTP API** instead.
+> `VITE_BACKEND_URL` points at the API Gateway URL. If Function URLs start
+> working again, the Function URL steps below still apply.
 
-1. Lambda → Functions → `budget-api` → **Configuration → Function URL →
-   Create function URL**.
-2. **Auth type: NONE.** Then Create, and copy the URL (looks like
-   `https://<random>.lambda-url.us-east-1.on.aws/`).
-3. Go back to step 3 and set `PLAID_REDIRECT_URI` to `<that URL>/link`.
+The API Gateway URL is the public HTTPS address of the backend. The frontend
+is built with this URL baked in (`VITE_BACKEND_URL`).
+
+Create it (CLI; run once):
+
+```bash
+AWS_REGION=us-east-1
+# 1. HTTP API with $default stage
+API_ID=$(aws apigatewayv2 create-api --name budget-api --protocol-type HTTP \
+  --region $AWS_REGION --query ApiId --output text)
+# 2. Lambda proxy integration
+LAMBDA_ARN="arn:aws:lambda:${AWS_REGION}:656192943270:function:budget-api"
+INT_ID=$(aws apigatewayv2 create-integration --api-id "$API_ID" \
+  --integration-type AWS_PROXY --integration-uri "$LAMBDA_ARN" \
+  --payload-format-version 2.0 --region $AWS_REGION \
+  --query IntegrationId --output text)
+# 3. Catch-all route
+aws apigatewayv2 create-route --api-id "$API_ID" --route-key '$default' \
+  --target "integrations/${INT_ID}" --region $AWS_REGION >/dev/null
+# 4. $default stage (auto-deploy)
+aws apigatewayv2 create-stage --api-id "$API_ID" --stage-name '$default' \
+  --auto-deploy --region $AWS_REGION >/dev/null
+# 5. Let API Gateway invoke the function
+aws lambda add-permission --function-name budget-api --statement-id apigw \
+  --action lambda:InvokeFunction --principal apigateway.amazonaws.com \
+  --source-arn "arn:aws:execute-api:${AWS_REGION}:656192943270:${API_ID}/*" \
+  --region $AWS_REGION >/dev/null
+echo "Backend URL: https://${API_ID}.execute-api.${AWS_REGION}.amazonaws.com"
+```
+
+Then go back to step 3 and set `PLAID_REDIRECT_URI` to `<that URL>/link`.
 
 **Why Auth type NONE is safe — the app has its own auth.** "Auth type NONE"
 only means *AWS* doesn't check credentials; the app checks them itself.

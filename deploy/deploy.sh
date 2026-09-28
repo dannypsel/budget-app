@@ -82,11 +82,20 @@ aws lambda update-function-code --region "$AWS_REGION" \
 step "3/7 — waiting for the function update to finish"
 aws lambda wait function-updated --region "$AWS_REGION" --function-name "$LAMBDA_FUNCTION"
 
-step "4/7 — reading the Function URL"
+step "4/7 — resolving the public backend URL"
+# Preferred: Lambda Function URL. Fallback: API Gateway HTTP API in front of
+# the function (Function URLs return 403 in this AWS account as of 2026-09-27;
+# see SETUP.md step 4). The API id is discovered by the "budget-api" name tag.
 FUNC_URL="$(aws lambda get-function-url-config --region "$AWS_REGION" \
-  --function-name "$LAMBDA_FUNCTION" --query FunctionUrl --output text)" \
-  || fail "No Function URL on '$LAMBDA_FUNCTION'. Do SETUP.md step 4 first."
-echo "Function URL: $FUNC_URL"
+  --function-name "$LAMBDA_FUNCTION" --query FunctionUrl --output text 2>/dev/null)" || true
+if [ -z "$FUNC_URL" ] || [ "$FUNC_URL" = "None" ]; then
+  API_ID="$(aws apigatewayv2 get-apis --region "$AWS_REGION" \
+    --query "Items[?Name=='budget-api'].ApiId" --output text 2>/dev/null)"
+  [ -n "$API_ID" ] && [ "$API_ID" != "None" ] \
+    || fail "No Function URL and no 'budget-api' API Gateway found. Do SETUP.md step 4 first."
+  FUNC_URL="https://${API_ID}.execute-api.${AWS_REGION}.amazonaws.com"
+fi
+echo "Backend URL: $FUNC_URL"
 
 step "5/7 — building the web frontend"
 [ -d "$WEB_DIR/node_modules" ] || fail "$WEB_DIR/node_modules is missing — run 'npm install' inside web/ once first."
@@ -108,5 +117,5 @@ aws cloudfront create-invalidation --distribution-id "$CLOUDFRONT_DIST_ID" --pat
 echo
 echo "Deployed."
 echo "  API:      $FUNC_URL"
-echo "  Web:      https://$CLOUDFRONT_DIST_ID  (use your distribution's domain name from the console)"
+echo "  Web:      https://duj1bo2j1usp2.cloudfront.net  (CloudFront distribution E1C1I0FMZGWO4D)"
 echo "  Image:    $ECR_URI:$SHA"
