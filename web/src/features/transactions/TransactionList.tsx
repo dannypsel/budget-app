@@ -3,7 +3,7 @@
 // sage for income), merchant + muted meta line, right-aligned signed amount.
 // Mirrors iOS TransactionRowView + day grouping.
 
-import { useMemo } from 'react'
+import { useMemo, type ReactNode } from 'react'
 import { ArrowLeftRight, EyeOff, Split, Undo2, type LucideIcon } from 'lucide-react'
 import { CategoryBadge } from '@/components/finance/CategoryBadge'
 import { Amount } from '@/components/finance/Amount'
@@ -45,11 +45,15 @@ export function TransactionList({
   transactions,
   accounts,
   onSelect,
+  renderTags,
 }: {
   transactions: Transaction[]
   /** Optional lookup map for rendering the account name under each row. */
   accounts?: Map<UUID, Account>
   onSelect?: (t: Transaction) => void
+  /** Optional per-row controls (e.g. tag selects) rendered beneath the row,
+   *  outside the row's tap target so they stay clickable. */
+  renderTags?: (t: Transaction) => ReactNode
 }) {
   const groups = useMemo(() => groupByDay(transactions), [transactions])
   return (
@@ -72,11 +76,14 @@ export function TransactionList({
                 isReimbursement(t) || isTransfer(t) || t.hidden || hasSplits(t)
               const tintColor = !special ? t.categories?.color : null
               return (
-                <button
+                <div
                   key={t.id}
-                  onClick={() => onSelect?.(t)}
-                  className="group flex w-full items-center gap-4 border-b border-border p-4 text-left transition-colors last:border-b-0 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+                  className="border-b border-border transition-colors last:border-b-0 hover:bg-accent"
                 >
+                  <button
+                    onClick={() => onSelect?.(t)}
+                    className="group flex w-full items-center gap-4 p-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+                  >
                   <span
                     aria-hidden="true"
                     style={
@@ -129,7 +136,9 @@ export function TransactionList({
                     )}
                   </div>
                   <Amount value={t.amount} className="shrink-0 text-xl font-semibold" />
-                </button>
+                  </button>
+                  {renderTags?.(t)}
+                </div>
               )
             })}
           </div>

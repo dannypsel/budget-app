@@ -27,7 +27,7 @@ from ai_categorize.providers import (
     classify_concurrent,
     get_provider,
 )
-from categorizer import _merchant_key, apply_learned, load_guess_context
+from categorizer import _merchant_key, apply_learned, load_guess_context, resolve_txn_tags
 from envutil import _env_float, _env_int
 
 logger = logging.getLogger(__name__)
@@ -185,14 +185,75 @@ def _cache_store(
         logger.exception("ai pipeline: cache store failed", extra={"user_id": user_id})
 
 
-def _apply_verdict(supabase, txn_id: str, category_id: str, confidence: float, source: str):
-    supabase.table("transactions").update(
-        {
-            "category_id": category_id,
-            "ai_confidence": confidence,
-            "ai_source": source,
-        }
-    ).eq("id", txn_id).execute()
+def _merchant_tag_memory(supabase, user_id: str) -> dict:
+    """merchant_txn_tags for one user as {merchant_key: row}. Missing table
+    (pre-migration DB) or any failure -> {} so the pipeline proceeds on
+    category defaults alone."""
+    try:
+        rows = (
+            supabase.table("merchant_txn_tags")
+            .select("merchant_key, need_want, spend_pattern")
+            .eq("user_id", user_id)
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        logger.exception(
+            "ai pipeline: failed to load merchant tag memory", extra={"user_id": user_id}
+        )
+        return {}
+    return {r["merchant_key"]: r for r in rows if r.get("merchant_key")}
+
+
+def _resolve_tags(
+    txn: dict, category_id: str, tag_ctx: dict
+) -> tuple[str | None, str | None]:
+    """(need_want, spend_pattern) for one verdict. Never raises: the lookups
+    are pure dict gets and resolve_txn_tags degrades to (None, None)."""
+    try:
+        ctx = tag_ctx or {}
+        cat_names = ctx.get("cat_names") or {}
+        merchant_tags = ctx.get("merchant_tags") or {}
+        return resolve_txn_tags(
+            cat_names.get(category_id), _merchant_key(txn or {}), merchant_tags
+        )
+    except Exception:
+        logger.exception("ai pipeline: tag resolution failed; leaving tags null")
+        return None, None
+
+
+def _apply_verdict(
+    supabase, txn: dict, category_id: str, confidence: float, source: str, tag_ctx: dict
+):
+    """Persist one categorization verdict: the category PLUS the auto-resolved
+    need/want and fixed/variable tags, all in the same transaction update.
+
+    Never breaks the verdict: tag resolution never raises (nulls on failure),
+    and if the DB predates the 20261024000000 migration (no tag columns) the
+    tagged update 400s and we retry with the verdict alone — the categorize
+    step keeps working on old DBs. A genuinely failing second write raises to
+    the call site, which logs and counts it like every other persist failure.
+    """
+    need_want, spend_pattern = _resolve_tags(txn, category_id, tag_ctx)
+    verdict_patch = {
+        "category_id": category_id,
+        "ai_confidence": confidence,
+        "ai_source": source,
+    }
+    patch = dict(verdict_patch)
+    if need_want is not None:
+        patch["need_want"] = need_want
+    if spend_pattern is not None:
+        patch["spend_pattern"] = spend_pattern
+    try:
+        supabase.table("transactions").update(patch).eq("id", txn["id"]).execute()
+    except Exception:
+        logger.exception(
+            "ai pipeline: tagged verdict failed; retrying with verdict alone",
+            extra={"user_id": (tag_ctx or {}).get("user_id")},
+        )
+        supabase.table("transactions").update(verdict_patch).eq("id", txn["id"]).execute()
 
 
 def run_ai_categorization(supabase, user_id: str) -> dict:
@@ -233,6 +294,13 @@ def _run(supabase, user_id: str, stats: dict) -> dict:
         return stats
     cat_ids = {c["id"] for c in categories}
     cat_choices = [(c["id"], c["name"]) for c in categories]
+    # Auto-classification context: category-id -> name (for the static
+    # category defaults) + the merchant tag memory (overrides defaults).
+    tag_ctx = {
+        "user_id": user_id,
+        "cat_names": {c["id"]: c["name"] for c in categories},
+        "merchant_tags": _merchant_tag_memory(supabase, user_id),
+    }
 
     txns, acct_types = _uncategorized_txns(supabase, user_id, AI_MAX_TXNS_PER_RUN)
     if not txns:
@@ -247,7 +315,7 @@ def _run(supabase, user_id: str, stats: dict) -> dict:
         if txn.get("category_id"):
             stats["rules_applied"] += 1
             try:
-                _apply_verdict(supabase, txn["id"], txn["category_id"], 1.0, "rules")
+                _apply_verdict(supabase, txn, txn["category_id"], 1.0, "rules", tag_ctx)
             except Exception:
                 logger.exception(
                     "ai pipeline: failed to persist rule verdict", extra={"user_id": user_id}
@@ -270,10 +338,11 @@ def _run(supabase, user_id: str, stats: dict) -> dict:
             try:
                 _apply_verdict(
                     supabase,
-                    txn["id"],
+                    txn,
                     hit["category_id"],
                     float(hit.get("confidence") or 0.0),
                     f"cache:{hit.get('source') or 'jev'}",
+                    tag_ctx,
                 )
             except Exception:
                 logger.exception(
@@ -335,7 +404,7 @@ def _run(supabase, user_id: str, stats: dict) -> dict:
         if cid and cid in cat_ids and verdict.confidence >= threshold:
             stats["ai_applied"] += 1
             try:
-                _apply_verdict(supabase, txn["id"], cid, verdict.confidence, provider.name)
+                _apply_verdict(supabase, txn, cid, verdict.confidence, provider.name, tag_ctx)
                 key = _merchant_key(txn)
                 if key:
                     _cache_store(supabase, user_id, key, cid, verdict.confidence, provider.name)

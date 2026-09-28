@@ -128,14 +128,16 @@ export async function deleteChurnBonus(id: UUID): Promise<void> {
 // ── credits ─────────────────────────────────────────────────────────────────
 
 /** A card's credits, soonest reset first. */
-export async function fetchChurnCredits(cardId: UUID): Promise<ChurnCredit[]> {
+/** Hidden credits are excluded everywhere by default (they have their own
+ *  restore list in Settings). Pass includeHidden to see them. */
+export async function fetchChurnCredits(
+  cardId: UUID,
+  opts: { includeHidden?: boolean } = {},
+): Promise<ChurnCredit[]> {
   const userId = await requireUserId()
-  const { data, error } = await supabase
-    .from('churn_credits')
-    .select('*')
-    .eq('card_id', cardId)
-    .eq('user_id', userId)
-    .order('reset_date', { ascending: true, nullsFirst: false })
+  let q = supabase.from('churn_credits').select('*').eq('card_id', cardId).eq('user_id', userId)
+  if (!opts.includeHidden) q = q.or('is_hidden.is.false,is_hidden.is.null')
+  const { data, error } = await q.order('reset_date', { ascending: true, nullsFirst: false })
   if (error) throw error
   return (data ?? []) as ChurnCredit[]
 }
@@ -153,13 +155,31 @@ export async function createChurnCredit(credit: ChurnCreditInsert): Promise<Chur
 
 /** Every credit across the caller's cards (deadlines widget, attention section),
  *  joined to their card names. */
-export async function fetchAllChurnCredits(): Promise<ChurnCredit[]> {
+/** All of the caller's credits with card names joined. Hidden credits are
+ *  excluded by default — pass includeHidden to see them (Settings restore list). */
+export async function fetchAllChurnCredits(
+  opts: { includeHidden?: boolean } = {},
+): Promise<ChurnCredit[]> {
+  const userId = await requireUserId()
+  let q = supabase
+    .from('churn_credits')
+    .select('*, churn_cards(card_name)')
+    .eq('user_id', userId)
+  if (!opts.includeHidden) q = q.or('is_hidden.is.false,is_hidden.is.null')
+  const { data, error } = await q.order('reset_date', { ascending: true, nullsFirst: false })
+  if (error) throw error
+  return (data ?? []) as ChurnCredit[]
+}
+
+/** Hidden credits only — the Settings restore list. */
+export async function fetchHiddenChurnCredits(): Promise<ChurnCredit[]> {
   const userId = await requireUserId()
   const { data, error } = await supabase
     .from('churn_credits')
     .select('*, churn_cards(card_name)')
     .eq('user_id', userId)
-    .order('reset_date', { ascending: true, nullsFirst: false })
+    .eq('is_hidden', true)
+    .order('credit_name', { ascending: true })
   if (error) throw error
   return (data ?? []) as ChurnCredit[]
 }
@@ -228,4 +248,60 @@ export async function fetchQualifyingSpend(opts: {
     (s, r) => s + Number(r.amount),
     0,
   )
+}
+
+export interface QualifyingWindow {
+  /** Caller-chosen key (bonus id); the result map is keyed by it. */
+  key: string
+  accountId: UUID
+  startDate: string // yyyy-MM-dd, inclusive
+  endDate: string // yyyy-MM-dd, inclusive
+}
+
+/** Qualifying spend for several (account, window) pairs with the same
+ *  exclusions as fetchQualifyingSpend. One query per distinct account covers the
+ *  union of its windows; per-window sums are computed client-side. Returns a
+ *  map from the caller's key → qualifying spend (0 when unknown). */
+export async function fetchQualifyingSpendBatch(
+  windows: QualifyingWindow[],
+): Promise<Map<string, number>> {
+  const totals = new Map<string, number>(windows.map((w) => [w.key, 0]))
+  if (windows.length === 0) return totals
+
+  const byAccount = new Map<UUID, { start: string; end: string; list: QualifyingWindow[] }>()
+  for (const w of windows) {
+    const cur = byAccount.get(w.accountId)
+    if (!cur) {
+      byAccount.set(w.accountId, { start: w.startDate, end: w.endDate, list: [w] })
+    } else {
+      if (w.startDate < cur.start) cur.start = w.startDate
+      if (w.endDate > cur.end) cur.end = w.endDate
+      cur.list.push(w)
+    }
+  }
+
+  for (const [accountId, { start, end, list }] of byAccount) {
+    const { data, error } = await supabase
+      .from('transactions')
+      .select('amount, effective_date')
+      .eq('account_id', accountId)
+      .gte('effective_date', start)
+      .lte('effective_date', end)
+      .eq('exclude_from_totals', false)
+      .is('transfer_group_id', null)
+      .gt('amount', 0)
+    if (error) throw error
+    const rows = (data ?? []) as { amount: number | string; effective_date: string }[]
+    for (const w of list) {
+      const sum = rows.reduce(
+        (s, r) =>
+          r.effective_date >= w.startDate && r.effective_date <= w.endDate
+            ? s + Number(r.amount)
+            : s,
+        0,
+      )
+      totals.set(w.key, sum)
+    }
+  }
+  return totals
 }

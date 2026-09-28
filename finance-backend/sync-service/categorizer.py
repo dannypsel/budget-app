@@ -1,11 +1,72 @@
+import logging
+
 from supabase_client import get_supabase
 from transfers import PFC_TRANSFER
+
+logger = logging.getLogger(__name__)
+
+#: Category-name defaults for need/want + fixed/variable auto-classification.
+#: Keys are normalized (lowercased, stripped) category names. Categories not
+#: listed here leave the tags null — no silent guessing.
+CATEGORY_TAG_DEFAULTS: dict[str, tuple[str, str]] = {
+    "rent": ("need", "fixed"),
+    "mortgage": ("need", "fixed"),
+    "groceries": ("need", "variable"),
+    "utilities": ("need", "variable"),
+    "insurance": ("need", "fixed"),
+    "dining": ("want", "variable"),
+    "restaurants": ("want", "variable"),
+    "eating out": ("want", "variable"),
+    "subscriptions": ("want", "fixed"),
+    "shopping": ("want", "variable"),
+}
+
+_VALID_NEED_WANT = ("need", "want")
+_VALID_SPEND_PATTERN = ("fixed", "variable")
 
 
 def _merchant_key(txn: dict) -> str:
     """Normalized merchant identity. MUST match the app's Transaction.merchantKey
     (lowercased, trimmed merchant_name, falling back to description)."""
     return (txn.get('merchant_name') or txn.get('description') or '').strip().lower()
+
+
+def resolve_txn_tags(
+    category_name: str | None,
+    merchant_key: str | None,
+    merchant_tags: dict | None,
+) -> tuple[str | None, str | None]:
+    """(need_want, spend_pattern) for one transaction, or (None, None).
+
+    Resolution order:
+      1. merchant_txn_tags memory — a stored row overrides the category
+         default, per field (a null/unknown stored value falls back to the
+         category default for that field);
+      2. CATEGORY_TAG_DEFAULTS by normalized category name;
+      3. unknown category and no memory -> (None, None) — never guesses.
+
+    Never raises: garbage in (or a malformed memory row) yields nulls, and any
+    unexpected error degrades to (None, None) so the pipeline can't break.
+    """
+    try:
+        name = category_name if isinstance(category_name, str) else ""
+        default = CATEGORY_TAG_DEFAULTS.get(name.strip().lower()) or (None, None)
+
+        mem = (merchant_tags or {}).get(merchant_key)
+        if not isinstance(mem, dict):
+            mem = {}
+
+        need_want = mem.get("need_want")
+        if need_want not in _VALID_NEED_WANT:
+            need_want = default[0]
+
+        spend_pattern = mem.get("spend_pattern")
+        if spend_pattern not in _VALID_SPEND_PATTERN:
+            spend_pattern = default[1]
+
+        return need_want, spend_pattern
+    except Exception:
+        return None, None
 
 
 def load_guess_context(user_id: str) -> dict:
@@ -40,7 +101,50 @@ def load_guess_context(user_id: str) -> dict:
         .execute().data or []
     income_id = next((c['id'] for c in cats if c['name'] == 'Income'), None)
 
-    return {'rules': rules, 'memory': memory, 'income_id': income_id}
+    # Tag context for need_want/spend_pattern: category id -> name for the
+    # static defaults, plus merchant_txn_tags memory (merchant overrides win
+    # per field). Fails safe to {} on a pre-migration DB so sync never breaks.
+    cat_names = {c['id']: c['name'] for c in cats if c.get('id')}
+    try:
+        tag_rows = sb.table('merchant_txn_tags') \
+            .select('merchant_key, need_want, spend_pattern') \
+            .eq('user_id', user_id) \
+            .execute().data or []
+        tag_memory = {r['merchant_key']: r for r in tag_rows if r.get('merchant_key')}
+    except Exception:
+        logger.exception('load_guess_context: merchant_txn_tags unreadable',
+                         extra={'user_id': user_id})
+        tag_memory = {}
+
+    return {'rules': rules, 'memory': memory, 'income_id': income_id,
+            'cat_names': cat_names, 'tag_memory': tag_memory}
+
+
+def fill_txn_tags(rows: list[dict], ctx: dict) -> list[dict]:
+    """Set need_want/spend_pattern on rows apply_learned already categorized.
+
+    Freshly synced rows that get a category at insert time never enter the
+    Jev pipeline (it only fetches category_id IS NULL), so without this they
+    would stay untagged until recategorized. Only non-None tags are written;
+    unknown categories stay null (never guesses). Never raises.
+    """
+    try:
+        cat_names = (ctx or {}).get('cat_names') or {}
+        tag_memory = (ctx or {}).get('tag_memory') or {}
+        for r in rows or []:
+            if not r.get('category_id'):
+                continue
+            if r.get('need_want') is not None or r.get('spend_pattern') is not None:
+                continue
+            need_want, spend_pattern = resolve_txn_tags(
+                cat_names.get(r['category_id']), _merchant_key(r), tag_memory)
+            if need_want is not None:
+                r['need_want'] = need_want
+            if spend_pattern is not None:
+                r['spend_pattern'] = spend_pattern
+    except Exception:
+        logger.exception('fill_txn_tags failed; leaving rows untagged')
+    return rows
 
 
 def _rule_matches(rule: dict, txn: dict) -> bool:

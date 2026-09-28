@@ -8,7 +8,7 @@ from plaid.model.accounts_get_request import AccountsGetRequest
 from plaid.model.transactions_sync_request import TransactionsSyncRequest
 
 import vault
-from categorizer import apply_learned, load_guess_context
+from categorizer import apply_learned, fill_txn_tags, load_guess_context
 from credit_detector import detect_credit_usage
 from plaid_client import fetch_institution_metadata, get_plaid_for_item
 from supabase_client import get_supabase, now_iso
@@ -130,6 +130,21 @@ def _upsert_new_transactions(supabase, rows: list, item_id, user_id) -> int:
             ).execute()
             written += 1
         except Exception:
+            if 'need_want' in row or 'spend_pattern' in row:
+                # Pre-migration DB (tag columns don't exist yet): retry bare so
+                # one missing column can't stall the item's sync.
+                bare = {k: v for k, v in row.items()
+                        if k not in ('need_want', 'spend_pattern')}
+                try:
+                    supabase.table('transactions').upsert(
+                        [bare],
+                        on_conflict='plaid_transaction_id',
+                        ignore_duplicates=True,
+                    ).execute()
+                    written += 1
+                    continue
+                except Exception:
+                    pass
             logger.exception('transaction row rejected by the database; skipping it',
                              extra={'item_id': item_id, 'user_id': user_id,
                                     'plaid_transaction_id': row.get('plaid_transaction_id'),
@@ -461,7 +476,11 @@ def _sync_item_locked(plaid, supabase, item, ctx, stats, user_id, refresh_balanc
                 **plaid_txn_fields(txn),
             })
 
-        new_txns = _fill_user_owned_defaults(apply_learned(new_txns, ctx, acct_types))
+        # Rows categorized here never enter the Jev pipeline (it only fetches
+        # category_id IS NULL), so fill need_want/spend_pattern now — the
+        # pipeline refreshes tags when it later recategorizes a row.
+        new_txns = _fill_user_owned_defaults(
+            fill_txn_tags(apply_learned(new_txns, ctx, acct_types), ctx))
 
         if new_txns:
             # DO NOTHING on conflict: an added event can replay over an existing

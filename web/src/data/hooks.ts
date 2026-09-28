@@ -16,6 +16,11 @@ import * as profileApi from './profile'
 import * as spendingPlanApi from './spendingPlan'
 import * as churningApi from './churning'
 import * as notificationsApi from './notifications'
+import * as monthBudgetsApi from './monthBudgets'
+import * as forecastAdjustmentsApi from './forecastAdjustments'
+import * as retirementScenariosApi from './retirementScenarios'
+import * as txnTagsApi from './txnTags'
+import type { TxnTagPatch } from './txnTags'
 import { fetchPlaidItems, deleteItem as deletePlaidItem } from './plaidItems'
 import { toISODate } from '@/lib/dates'
 import type {
@@ -25,7 +30,9 @@ import type {
   ChurnBonusInsert,
   ChurnCardInsert,
   ChurnCreditInsert,
+  ForecastAdjustmentInsert,
   PlaidItem,
+  RetirementInputs,
   SavingsGoalInsert,
   Transaction,
   UUID,
@@ -1055,9 +1062,9 @@ export function useDeleteChurnCredit() {
 }
 
 /** Every credit across the caller's cards, joined to card names (deadlines widget,
- *  "credits needing attention" section). */
+ *  "credits needing attention" section). Hidden credits are excluded. */
 export function useAllChurnCredits() {
-  return useQuery({ queryKey: sbKeys.allChurnCredits, queryFn: churningApi.fetchAllChurnCredits })
+  return useQuery({ queryKey: sbKeys.allChurnCredits, queryFn: () => churningApi.fetchAllChurnCredits() })
 }
 
 /** One transaction by id (credit auto-detection "View transaction" subtext). */
@@ -1084,5 +1091,150 @@ export function useBonusQualifyingSpend(
         endDate: endDate!,
       }),
     enabled: accountId != null && startDate != null && endDate != null,
+  })
+}
+
+/** Batch qualifying spend for several bonus windows (see
+ *  fetchQualifyingSpendBatch) — powers the combined "cards that need to be
+ *  used" list with one query per distinct linked account. */
+export function useBonusesQualifyingSpend(windows: churningApi.QualifyingWindow[]) {
+  return useQuery({
+    queryKey: ['sb', 'churning', 'qualifyingSpendBatch', windows] as const,
+    queryFn: () => churningApi.fetchQualifyingSpendBatch(windows),
+    enabled: windows.length > 0,
+  })
+}
+
+// ── Monthly budgets ──────────────────────────────────────────────────────────
+
+/** Budget targets for one month (first-of-month yyyy-MM-dd). */
+export function useMonthBudgets(monthFirstISO: string) {
+  return useQuery({
+    queryKey: ['sb', 'budgets', monthFirstISO] as const,
+    queryFn: () => monthBudgetsApi.fetchBudgets(monthFirstISO),
+  })
+}
+
+/** Upsert (or delete, with target null) one category's target for a month. */
+export function useSaveBudgetTarget() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      monthFirstISO,
+      category,
+      target,
+    }: {
+      monthFirstISO: string
+      category: string
+      target: number | null
+    }) => monthBudgetsApi.saveBudgetTarget(monthFirstISO, category, target),
+    onSuccess: (_d, v) =>
+      qc.invalidateQueries({ queryKey: ['sb', 'budgets', v.monthFirstISO] }),
+    onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not save budget'),
+  })
+}
+
+// ── Forecast adjustments ─────────────────────────────────────────────────────
+
+/** All of the caller's forecast adjustments. */
+export function useForecastAdjustments() {
+  return useQuery({
+    queryKey: ['sb', 'forecastAdjustments'] as const,
+    queryFn: forecastAdjustmentsApi.fetchForecastAdjustments,
+  })
+}
+
+function invalidateForecastAdjustments(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ queryKey: ['sb', 'forecastAdjustments'] })
+}
+
+export function useCreateForecastAdjustment() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input: ForecastAdjustmentInsert) =>
+      forecastAdjustmentsApi.createForecastAdjustment(input),
+    onSuccess: () => invalidateForecastAdjustments(qc),
+    onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not add adjustment'),
+  })
+}
+
+export function useUpdateForecastAdjustment() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: UUID; patch: Partial<ForecastAdjustmentInsert> }) =>
+      forecastAdjustmentsApi.updateForecastAdjustment(id, patch),
+    onSuccess: () => invalidateForecastAdjustments(qc),
+    onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not update adjustment'),
+  })
+}
+
+export function useDeleteForecastAdjustment() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: UUID) => forecastAdjustmentsApi.deleteForecastAdjustment(id),
+    onSuccess: () => invalidateForecastAdjustments(qc),
+    onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not delete adjustment'),
+  })
+}
+
+// ── Retirement scenarios ─────────────────────────────────────────────────────
+
+/** All of the caller's saved retirement scenarios, newest first. */
+export function useRetirementScenarios() {
+  return useQuery({
+    queryKey: ['sb', 'retirementScenarios'] as const,
+    queryFn: retirementScenariosApi.fetchRetirementScenarios,
+  })
+}
+
+function invalidateRetirementScenarios(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ queryKey: ['sb', 'retirementScenarios'] })
+}
+
+export function useCreateRetirementScenario() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ name, inputs }: { name: string; inputs: RetirementInputs }) =>
+      retirementScenariosApi.createRetirementScenario(name, inputs),
+    onSuccess: () => invalidateRetirementScenarios(qc),
+    onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not save scenario'),
+  })
+}
+
+export function useUpdateRetirementScenario() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      id,
+      patch,
+    }: {
+      id: UUID
+      patch: { name?: string; inputs?: RetirementInputs }
+    }) => retirementScenariosApi.updateRetirementScenario(id, patch),
+    onSuccess: () => invalidateRetirementScenarios(qc),
+    onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not update scenario'),
+  })
+}
+
+export function useDeleteRetirementScenario() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: UUID) => retirementScenariosApi.deleteRetirementScenario(id),
+    onSuccess: () => invalidateRetirementScenarios(qc),
+    onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not delete scenario'),
+  })
+}
+
+// ── Transaction need/want + fixed/variable tags ──────────────────────────────
+
+/** Manual tag override: writes the transaction row and remembers the tags for
+ *  the merchant (merchant_txn_tags). */
+export function useSetTxnTags() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ txn, patch }: { txn: Transaction; patch: TxnTagPatch }) =>
+      txnTagsApi.setTxnTags(txn, patch),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['sb', 'transactions'] }),
+    onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not update tags'),
   })
 }

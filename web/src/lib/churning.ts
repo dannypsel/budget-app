@@ -169,3 +169,18 @@ export function parseKeywordList(input: string): string[] {
     .map((k) => k.trim())
     .filter((k) => k.length > 0)
 }
+
+/** Physical-card identity: product name + last 5 digits + owner full name (the
+ *  household shares cards, so the owner only identifies which physical card to
+ *  grab). Falls back to last4 when last5 was never entered. */
+export function cardIdentityLine(
+  card: Pick<ChurnCard, 'card_name' | 'last4' | 'owner_name' | 'last5'>,
+): string {
+  return [
+    card.card_name,
+    card.last5 ? `••••• ${card.last5}` : card.last4 ? `•••• ${card.last4}` : null,
+    card.owner_name,
+  ]
+    .filter(Boolean)
+    .join(' · ')
+}

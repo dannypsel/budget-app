@@ -25,12 +25,15 @@ import {
   Eye,
   EyeOff,
   FolderCog,
+  Gamepad2,
   Landmark,
+  ListChecks,
   Monitor,
   Moon,
   Pencil,
   Plug,
   Plus,
+  RotateCcw,
   Sparkles,
   Sun,
   Trash2,
@@ -65,8 +68,11 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
+import { Checkbox } from '@/components/ui/checkbox'
 import { useAuth } from '@/lib/auth'
 import { autoCategorize, fetchCategorizeStatus } from '@/data/aiCategorize'
+import * as disc from '@/data/discretionary'
+import * as churnApi from '@/data/churning'
 import {
   sbKeys,
   usePlaidItems,
@@ -90,7 +96,7 @@ import { openWarmTab, isTrustedMessageOrigin } from '@/data/backend'
 import { formatShortDate } from '@/lib/dates'
 import { setDefaultCurrency } from '@/lib/money'
 import { transactionsToCsv, downloadCsv } from '@/lib/exportCsv'
-import type { Account, Category, CategoryRule, RuleDirection } from '@/types/domain'
+import type { Account, Category, CategoryRule, RuleDirection, UUID } from '@/types/domain'
 import { cn } from '@/lib/utils'
 
 const focusRing =
@@ -176,7 +182,7 @@ function SectionView({
   )
 }
 
-type Section = 'general' | 'accounts' | 'categories' | 'rules' | 'ai' | 'notifications' | 'data'
+type Section = 'general' | 'accounts' | 'categories' | 'rules' | 'ai' | 'notifications' | 'data' | 'gameTypes' | 'hiddenCredits' | 'watched'
 
 const SECTIONS: { id: Section; label: string; Icon: typeof User }[] = [
   { id: 'general', label: 'General', Icon: User },
@@ -186,6 +192,9 @@ const SECTIONS: { id: Section; label: string; Icon: typeof User }[] = [
   { id: 'ai', label: 'AI Categorization', Icon: Sparkles },
   { id: 'notifications', label: 'Notifications', Icon: Bell },
   { id: 'data', label: 'Data', Icon: Database },
+  { id: 'gameTypes', label: 'Game types', Icon: Gamepad2 },
+  { id: 'hiddenCredits', label: 'Card credits', Icon: EyeOff },
+  { id: 'watched', label: 'Watched categories', Icon: ListChecks },
 ]
 
 export default function SettingsPage() {
@@ -297,6 +306,10 @@ export default function SettingsPage() {
   if (section === 'notifications')
     return <NotificationsSection onBack={() => setSection(null)} />
   if (section === 'data') return <DataSection onBack={() => setSection(null)} />
+  if (section === 'gameTypes') return <GameTypesSection onBack={() => setSection(null)} />
+  if (section === 'hiddenCredits')
+    return <HiddenCreditsSection onBack={() => setSection(null)} />
+  if (section === 'watched') return <WatchedCategoriesSection onBack={() => setSection(null)} />
 
   return (
     <div className="space-y-6 pt-4 md:pt-6">
@@ -1712,6 +1725,323 @@ const IMPACT_ITEMS = [
   { icon: '↕', label: 'Transfer & reimbursement links' },
   { icon: '👤', label: 'Profile settings' },
 ]
+
+// ─── Game types: discretionary game list (add / rename / remove) ────────────
+
+function GameTypesSection({ onBack }: { onBack: () => void }) {
+  const queryClient = useQueryClient()
+  const { data: types = [], isLoading } = useQuery({
+    queryKey: ['sb', 'discretionary', 'gameTypes'],
+    queryFn: disc.fetchGameTypes,
+  })
+  const [adding, setAdding] = useState(false)
+  const [name, setName] = useState('')
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [draftName, setDraftName] = useState('')
+
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: ['sb', 'discretionary', 'gameTypes'] })
+  }
+
+  const save = useMutation({
+    mutationFn: async (n: string): Promise<void> => {
+      if (editingId) {
+        await disc.renameGameType(editingId, n)
+        return
+      }
+      await disc.createGameType(n)
+    },
+    onSuccess: () => {
+      invalidate()
+      setAdding(false)
+      setName('')
+      setEditingId(null)
+      toast.success('Game type saved')
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not save game type'),
+  })
+  const remove = useMutation({
+    mutationFn: (id: string) => disc.deleteGameType(id),
+    onSuccess: () => {
+      invalidate()
+      toast.success('Game type removed')
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not remove game type'),
+  })
+  const busy = save.isPending || remove.isPending
+
+  function submitAdd() {
+    if (name.trim().length > 0) save.mutate(name.trim())
+  }
+  function submitRename() {
+    if (editingId && draftName.trim().length > 0) save.mutate(draftName.trim())
+  }
+
+  return (
+    <SectionView title="Game types" onBack={onBack}>
+      <div className="space-y-6">
+        <section className="card-surface p-2 md:p-3">
+          {isLoading ? (
+            <p className="px-4 py-8 text-center text-sm text-muted-foreground">Loading…</p>
+          ) : types.length === 0 ? (
+            <p className="px-4 py-8 text-center text-sm text-muted-foreground">
+              No game types yet.
+            </p>
+          ) : (
+            <div className="divide-y divide-border">
+              {types.map((t) => (
+                <div key={t.id} className="flex items-center gap-3 px-2 py-2.5">
+                  <Gamepad2 aria-hidden className="h-5 w-5 shrink-0 text-muted-foreground" />
+                  <div className="min-w-0 flex-1">
+                    {editingId === t.id ? (
+                      <div className="flex items-center gap-2">
+                        <Input
+                          value={draftName}
+                          onChange={(e) => setDraftName(e.target.value)}
+                          autoFocus
+                          aria-label="Game type name"
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') submitRename()
+                            if (e.key === 'Escape') setEditingId(null)
+                          }}
+                        />
+                        <Button type="button" size="sm" onClick={submitRename} disabled={busy || draftName.trim().length === 0}>
+                          Save
+                        </Button>
+                        <Button type="button" size="sm" variant="ghost" onClick={() => setEditingId(null)}>
+                          Cancel
+                        </Button>
+                      </div>
+                    ) : (
+                      <p className="truncate text-base font-medium text-foreground">{t.name}</p>
+                    )}
+                  </div>
+                  {editingId !== t.id && (
+                    <>
+                      <button
+                        type="button"
+                        title="Rename"
+                        aria-label={`Rename ${t.name}`}
+                        onClick={() => {
+                          setEditingId(t.id)
+                          setDraftName(t.name)
+                        }}
+                        disabled={busy}
+                        className={cn(iconBtn, focusRing, 'disabled:opacity-60')}
+                      >
+                        <Pencil aria-hidden className="h-4 w-4" />
+                      </button>
+                      <button
+                        type="button"
+                        title="Remove"
+                        aria-label={`Remove ${t.name}`}
+                        onClick={() => remove.mutate(t.id)}
+                        disabled={busy}
+                        className={cn(
+                          iconBtn,
+                          focusRing,
+                          'hover:bg-destructive/10 hover:text-destructive disabled:opacity-60',
+                        )}
+                      >
+                        <Trash2 aria-hidden className="h-4 w-4" />
+                      </button>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="card-surface p-6">
+          {adding ? (
+            <div className="flex items-center gap-2">
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                autoFocus
+                aria-label="New game type name"
+                placeholder="e.g. Chess"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') submitAdd()
+                }}
+              />
+              <Button type="button" onClick={submitAdd} disabled={busy || name.trim().length === 0}>
+                {save.isPending ? 'Adding…' : 'Add'}
+              </Button>
+              <Button type="button" variant="ghost" onClick={() => setAdding(false)}>
+                Cancel
+              </Button>
+            </div>
+          ) : (
+            <SettingsRow
+              icon={<Plus aria-hidden className="h-5 w-5" />}
+              label="Add game type"
+              onClick={() => setAdding(true)}
+            />
+          )}
+          <p className="mt-3 text-xs text-muted-foreground">
+            A game type used by ledger entries cannot be removed — rename it instead.
+          </p>
+        </section>
+      </div>
+    </SectionView>
+  )
+}
+
+// ─── Hidden card credits: restore list ──────────────────────────────────────
+
+function HiddenCreditsSection({ onBack }: { onBack: () => void }) {
+  const queryClient = useQueryClient()
+  const { data: credits = [], isLoading } = useQuery({
+    queryKey: ['sb', 'churning', 'credits', 'hidden'],
+    queryFn: churnApi.fetchHiddenChurnCredits,
+  })
+
+  const restore = useMutation({
+    mutationFn: (id: UUID) => churnApi.updateChurnCredit(id, { is_hidden: false }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['sb', 'churning', 'credits', 'hidden'] })
+      void queryClient.invalidateQueries({ queryKey: sbKeys.allChurnCredits })
+      void queryClient.invalidateQueries({ queryKey: ['sb', 'churning', 'credits'] })
+      toast.success('Credit restored')
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not restore credit'),
+  })
+
+  return (
+    <SectionView title="Card credits" onBack={onBack}>
+      <div className="space-y-6">
+        <section className="card-surface p-2 md:p-3">
+          {isLoading ? (
+            <p className="px-4 py-8 text-center text-sm text-muted-foreground">Loading…</p>
+          ) : credits.length === 0 ? (
+            <p className="px-4 py-8 text-center text-sm text-muted-foreground">
+              No hidden credits.
+            </p>
+          ) : (
+            <div className="divide-y divide-border">
+              {credits.map((c) => (
+                <div key={c.id} className="flex items-center gap-3 px-2 py-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-base font-medium text-foreground">
+                      {c.program_label?.trim() || c.churn_cards?.card_name || c.credit_name}
+                    </p>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {c.credit_name}
+                      {c.churn_cards?.card_name ? ` · ${c.churn_cards.card_name}` : ''}
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => restore.mutate(c.id)}
+                    disabled={restore.isPending}
+                  >
+                    <RotateCcw className="mr-1.5 h-4 w-4" aria-hidden />
+                    Restore
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+        <p className="text-xs text-muted-foreground">
+          Hidden credits are excluded from every credit list, total, and count across the app.
+        </p>
+      </div>
+    </SectionView>
+  )
+}
+
+// ─── Watched categories: spending-plan subset ───────────────────────────────
+
+const WATCHED_DEFAULTS = ['groceries', 'shopping', 'eating out', 'pregnancy craving']
+
+function WatchedCategoriesSection({ onBack }: { onBack: () => void }) {
+  const { data: profile } = useMyProfile()
+  const updateProfile = useUpdateMyProfile()
+  const { data: categories = [], isLoading } = useCategories()
+
+  const active = useMemo(() => categories.filter((c) => c.is_active !== false), [categories])
+
+  // Saved ids when set; otherwise the seed defaults matched by name.
+  const initialIds = useMemo(() => {
+    if (profile?.watched_categories && profile.watched_categories.length > 0) {
+      const saved = new Set(profile.watched_categories)
+      return active.filter((c) => saved.has(c.id)).map((c) => c.id)
+    }
+    const byName = new Map(active.map((c) => [c.name.trim().toLowerCase(), c.id]))
+    return WATCHED_DEFAULTS.map((n) => byName.get(n)).filter((id): id is string => !!id)
+  }, [profile?.watched_categories, active])
+
+  const [selected, setSelected] = useState<string[] | null>(null)
+  useEffect(() => {
+    setSelected(null)
+  }, [profile?.watched_categories])
+  const current = selected ?? initialIds
+  const dirty = selected !== null && selected.join(',') !== initialIds.join(',')
+
+  function toggle(id: string) {
+    const list = selected ?? initialIds
+    setSelected(list.includes(id) ? list.filter((x) => x !== id) : [...list, id])
+  }
+
+  function save() {
+    const list = selected ?? initialIds
+    toast.promise(updateProfile.mutateAsync({ watched_categories: list }), {
+      loading: 'Saving…',
+      success: 'Watched categories saved',
+      error: (e) => (e instanceof Error ? e.message : 'Could not save'),
+    })
+  }
+
+  return (
+    <SectionView title="Watched categories" onBack={onBack}>
+      <div className="space-y-6">
+        <section className="card-surface p-2 md:p-3">
+          {isLoading ? (
+            <p className="px-4 py-8 text-center text-sm text-muted-foreground">Loading…</p>
+          ) : active.length === 0 ? (
+            <p className="px-4 py-8 text-center text-sm text-muted-foreground">
+              No categories yet.
+            </p>
+          ) : (
+            <div className="divide-y divide-border">
+              {active.map((cat) => {
+                const checked = current.includes(cat.id)
+                return (
+                  <label
+                    key={cat.id}
+                    className="flex cursor-pointer items-center gap-3 px-2 py-2.5"
+                  >
+                    <Checkbox
+                      checked={checked}
+                      onCheckedChange={() => toggle(cat.id)}
+                      aria-label={`Watch ${cat.name}`}
+                    />
+                    <CategoryIcon category={cat} size={32} />
+                    <span className="truncate text-base text-foreground">{cat.name}</span>
+                  </label>
+                )
+              })}
+            </div>
+          )}
+        </section>
+        <section className="card-surface p-6">
+          <p className="mb-4 text-sm text-muted-foreground">
+            These categories appear in the Overview spending plan — a focused subset instead of
+            every category.
+          </p>
+          <Button type="button" onClick={save} disabled={!dirty || updateProfile.isPending}>
+            {updateProfile.isPending ? 'Saving…' : 'Save watched categories'}
+          </Button>
+        </section>
+      </div>
+    </SectionView>
+  )
+}
 
 function DeleteAccountDialog({
   open,

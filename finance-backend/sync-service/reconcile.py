@@ -32,7 +32,7 @@ the alert signal, the heal is the mitigation.
 import logging
 
 import vault
-from categorizer import apply_learned, load_guess_context
+from categorizer import apply_learned, fill_txn_tags, load_guess_context
 from plaid_client import get_plaid_for_item
 from supabase_client import get_supabase, now_iso
 from sync import (
@@ -184,11 +184,21 @@ def _reconcile_item_locked(plaid, supabase, item, ctx, user_id, token) -> dict:
         logger.warning('snapshot txns on unmapped accounts, skipping', extra={
             'accounts': sorted(unknown_accts),
             'institution': item.get('institution_name')})
-    missing = apply_learned(missing, ctx, acct_types)
+    # Healed rows get tags here for the same reason as sync.py: rows categorized
+    # at insert never enter the Jev pipeline.
+    missing = fill_txn_tags(apply_learned(missing, ctx, acct_types), ctx)
     if missing:
-        res = supabase.table('transactions').upsert(
-            missing, on_conflict='plaid_transaction_id', ignore_duplicates=True,
-        ).execute()
+        try:
+            res = supabase.table('transactions').upsert(
+                missing, on_conflict='plaid_transaction_id', ignore_duplicates=True,
+            ).execute()
+        except Exception:
+            # Pre-migration DB (tag columns don't exist yet): retry bare.
+            bare = [{k: v for k, v in r.items()
+                     if k not in ('need_want', 'spend_pattern')} for r in missing]
+            res = supabase.table('transactions').upsert(
+                bare, on_conflict='plaid_transaction_id', ignore_duplicates=True,
+            ).execute()
         # Count what actually landed: DO NOTHING returns only inserted rows,
         # so a row that slipped in since our read doesn't fire a false alert.
         drift['missing'] = len(res.data)

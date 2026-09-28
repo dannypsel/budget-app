@@ -24,6 +24,8 @@ export interface ProfilePatch {
   ai_enabled?: boolean
   ai_provider?: string
   ai_confidence_threshold?: number
+  /** Spending-plan watched categories (Settings → Watched categories). */
+  watched_categories?: string[] | null
 }
 /** The caller's own profile, or null if the row doesn't exist yet (maybeSingle). */
 export async function fetchMyProfile(): Promise<Profile | null> {

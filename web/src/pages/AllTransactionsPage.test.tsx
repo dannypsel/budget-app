@@ -31,6 +31,8 @@ vi.mock('@/data/hooks', () => ({
   useToggleTransactionTag: () => ({ mutate: vi.fn() }),
   useUpsertTag: () => ({ mutateAsync: vi.fn() }),
   useSetCategory: () => ({ mutateAsync: vi.fn() }),
+  // Pulled in by the per-row TransactionTagControls (need/want, fixed/variable).
+  useSetTxnTags: () => ({ mutateAsync: vi.fn() }),
   useSetHidden: () => ({ mutateAsync: vi.fn() }),
   useSetReimbursement: () => ({ mutate: vi.fn() }),
   useSetExcludeFromTotals: () => ({ mutate: vi.fn() }),

@@ -5,10 +5,14 @@ import { Navigate, Route } from 'react-router-dom'
 import AccountDetailPage from '@/pages/AccountDetailPage'
 import AccountsPage from '@/pages/AccountsPage'
 import AllTransactionsPage from '@/pages/AllTransactionsPage'
+import BudgetsPage from '@/pages/BudgetsPage'
 import ChurnCardDetailPage from '@/pages/ChurnCardDetailPage'
 import ChurningPage from '@/pages/ChurningPage'
+import DiscretionaryPage from '@/pages/DiscretionaryPage'
 import RecurringChargesPage from '@/pages/RecurringChargesPage'
 import ReportsPage from '@/pages/ReportsPage'
+import RetirementPage from '@/pages/RetirementPage'
+import RewardsPage from '@/pages/RewardsPage'
 import SeparateAccountDetailPage from '@/pages/SeparateAccountDetailPage'
 import SettingsPage from '@/pages/SettingsPage'
 import SpendingPlanPage from '@/pages/SpendingPlanPage'
@@ -30,6 +34,10 @@ export const AppRouteTable = (
     <Route path="/transactions" element={<AllTransactionsPage />} />
     <Route path="/recurring" element={<RecurringChargesPage />} />
     <Route path="/reports" element={<ReportsPage />} />
+    <Route path="/budgets" element={<BudgetsPage />} />
+    <Route path="/retirement" element={<RetirementPage />} />
+    <Route path="/rewards" element={<RewardsPage />} />
+    <Route path="/discretionary" element={<DiscretionaryPage />} />
     <Route path="/churning" element={<ChurningPage />} />
     <Route path="/churning/:cardId" element={<ChurnCardDetailPage />} />
     <Route path="/settings" element={<SettingsPage />} />

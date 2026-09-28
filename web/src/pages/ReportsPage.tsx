@@ -51,6 +51,7 @@ import {
 } from '@/lib/chartTooltip'
 import { downloadCsv, rowsToCsv } from '@/lib/exportCsv'
 import { cn } from '@/lib/utils'
+import ForecastSection from '@/components/reports/ForecastSection'
 import type { Account, Category, UUID } from '@/types/domain'
 
 type Preset = 'this-month' | 'last-month' | 'last-3' | 'last-6' | 'last-12' | 'custom'
@@ -209,6 +210,9 @@ export default function ReportsPage() {
           Export CSV
         </Button>
       </div>
+
+      {/* ── Forecast (forward-looking) ── */}
+      <ForecastSection />
 
       {/* ── Controls ── */}
       <section className="card-surface flex flex-col gap-5 p-4 md:p-6">

@@ -20,13 +20,25 @@ import {
   useAccounts,
   useAllChurnBonuses,
   useAllChurnCredits,
+  useBonusesQualifyingSpend,
   useChurnCards,
   useCreateChurnCard,
   useDeleteChurnCard,
   useUpdateChurnCard,
 } from '@/data/hooks'
-import { buildChurnDeadlines, creditDaysLeft, creditNeedsAttention, creditRemaining, daysUntil } from '@/lib/churning'
-import type { ChurnCard, ChurnCardInsert, ChurnCredit, UUID } from '@/types/domain'
+import {
+  bonusProgress,
+  bonusWindow,
+  buildChurnDeadlines,
+  cardIdentityLine,
+  creditDaysLeft,
+  creditNeedsAttention,
+  creditRemaining,
+  daysUntil,
+} from '@/lib/churning'
+import type { QualifyingWindow } from '@/data/churning'
+import { ProgressBar } from '@/components/finance/ProgressBar'
+import type { ChurnBonus, ChurnCard, ChurnCardInsert, ChurnCredit, UUID } from '@/types/domain'
 import { formatCurrency } from '@/lib/money'
 import { formatShortDate } from '@/lib/dates'
 import { cn } from '@/lib/utils'
@@ -80,11 +92,14 @@ export default function ChurningPage() {
           </Button>
         </section>
       ) : (
-        <ul className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          {cards.map((card) => (
-            <CardRow key={card.id} card={card} deadline={deadlineByCard.get(card.id) ?? null} />
-          ))}
-        </ul>
+        <>
+          <CardsThatNeedToBeUsed cards={cards} bonuses={bonuses} />
+          <ul className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            {cards.map((card) => (
+              <CardRow key={card.id} card={card} deadline={deadlineByCard.get(card.id) ?? null} />
+            ))}
+          </ul>
+        </>
       )}
 
       {attentionCredits.length > 0 && (
@@ -102,6 +117,121 @@ export default function ChurningPage() {
 
       <CardDialog open={addOpen} onOpenChange={setAddOpen} card={null} />
     </div>
+  )
+}
+
+/** Combined household "cards that need to be used": every in-progress signup
+ *  bonus ordered by nearest deadline. Shows the physical-card identity
+ *  (name + last5 + owner), the requirement, qualifying spend so far (same
+ *  logic as the card detail page), remaining, deadline, and a progress bar —
+ *  neutral numbers only, no per-day figures or pace labels. */
+function CardsThatNeedToBeUsed({
+  cards,
+  bonuses,
+}: {
+  cards: ChurnCard[]
+  bonuses: ChurnBonus[]
+}) {
+  const inProgress = useMemo(
+    () => bonuses.filter((b) => b.status === 'in_progress' && daysUntil(b.spend_by_date) >= 0),
+    [bonuses],
+  )
+
+  const windows = useMemo<QualifyingWindow[]>(
+    () =>
+      inProgress.flatMap((b) => {
+        const card = cards.find((c) => c.id === b.card_id)
+        const win = card ? bonusWindow(card, b) : null
+        if (!card?.account_id || !win) return []
+        return [{ key: b.id, accountId: card.account_id, startDate: win.start, endDate: win.end }]
+      }),
+    [inProgress, cards],
+  )
+  const { data: spendByBonus } = useBonusesQualifyingSpend(windows)
+
+  const items = useMemo(
+    () =>
+      inProgress
+        .map((b) => {
+          const card = cards.find((c) => c.id === b.card_id)
+          const progress = bonusProgress(b, spendByBonus?.get(b.id) ?? 0)
+          return {
+            bonus: b,
+            card,
+            progress,
+            tracked: windows.some((w) => w.key === b.id),
+          }
+        })
+        .sort((a, b2) => a.progress.daysLeft - b2.progress.daysLeft),
+    [inProgress, cards, spendByBonus, windows],
+  )
+
+  if (items.length === 0) return null
+
+  return (
+    <section aria-label="Cards that need to be used">
+      <h2 className="mb-3 text-lg font-semibold tracking-tight text-foreground">
+        Cards that need to be used
+      </h2>
+      <ul className="space-y-3">
+        {items.map(({ bonus, card, progress, tracked }) => (
+          <li key={bonus.id}>
+            <Link
+              to={`/churning/${bonus.card_id}`}
+              className="card-surface block p-4 transition-colors hover:bg-accent"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold text-foreground">
+                    {card ? cardIdentityLine(card) : 'Card'}
+                  </p>
+                  <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                    {bonus.description}
+                    {!tracked && ' · link an account on the card to track spend'}
+                  </p>
+                </div>
+                <span
+                  className={cn(
+                    'shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold tabular-nums',
+                    progress.daysLeft <= 14
+                      ? 'bg-destructive/10 text-destructive'
+                      : 'bg-surface-container-high text-muted-foreground',
+                  )}
+                >
+                  {formatShortDate(bonus.spend_by_date)}
+                  {' · '}
+                  {progress.daysLeft === 0
+                    ? 'Due today'
+                    : `${progress.daysLeft}d left`}
+                </span>
+              </div>
+              <div className="mt-3">
+                <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
+                  <span>
+                    Requirement <strong className="tabular-nums text-foreground">{formatCurrency(progress.required)}</strong>
+                  </span>
+                  <span>
+                    Spent <strong className="tabular-nums text-foreground">{formatCurrency(progress.spent)}</strong>
+                  </span>
+                  <span>
+                    Remaining{' '}
+                    <strong className={cn('tabular-nums', progress.remaining > 0 ? 'text-destructive' : 'text-money-income')}>
+                      {formatCurrency(progress.remaining)}
+                    </strong>
+                  </span>
+                </div>
+                <div className="mt-2">
+                  <ProgressBar
+                    value={progress.fraction * 100}
+                    label={`${bonus.description} spend progress`}
+                  />
+                </div>
+              </div>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </section>
   )
 }
 
@@ -153,7 +283,10 @@ function CardRow({ card, deadline }: { card: ChurnCard; deadline: string | null 
           <div className="min-w-0">
             <p className="truncate text-lg font-semibold text-foreground">{card.card_name}</p>
             <p className="mt-0.5 text-sm text-muted-foreground">
-              {[card.issuer, card.last4 ? `•••• ${card.last4}` : null]
+              {[
+                card.last5 ? `••••• ${card.last5}` : card.last4 ? `•••• ${card.last4}` : null,
+                card.owner_name,
+              ]
                 .filter(Boolean)
                 .join(' · ') || '—'}
             </p>
@@ -229,6 +362,8 @@ export function CardDialog({
   const [name, setName] = useState(card?.card_name ?? '')
   const [issuer, setIssuer] = useState(card?.issuer ?? '')
   const [last4, setLast4] = useState(card?.last4 ?? '')
+  const [last5, setLast5] = useState(card?.last5 ?? '')
+  const [ownerName, setOwnerName] = useState(card?.owner_name ?? '')
   const [openedDate, setOpenedDate] = useState(card?.opened_date ?? '')
   const [annualFee, setAnnualFee] = useState(card?.annual_fee != null ? String(card.annual_fee) : '')
   const [annualFeeDate, setAnnualFeeDate] = useState(card?.annual_fee_date ?? '')
@@ -253,6 +388,8 @@ export function CardDialog({
       card_name: name.trim(),
       issuer: issuer.trim() || undefined,
       last4: last4.trim() || undefined,
+      last5: last5.trim() || undefined,
+      owner_name: ownerName.trim() || undefined,
       opened_date: openedDate || undefined,
       annual_fee: fee,
       annual_fee_date: annualFeeDate || undefined,
@@ -307,6 +444,30 @@ export function CardDialog({
               maxLength={4}
               placeholder="1234"
             />
+            <p className="text-xs text-muted-foreground">Auto-filled from the linked account.</p>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="card-last5">Last 5</Label>
+            <Input
+              id="card-last5"
+              value={last5}
+              onChange={(e) => setLast5(e.target.value)}
+              inputMode="numeric"
+              maxLength={5}
+              placeholder="12345"
+            />
+            <p className="text-xs text-muted-foreground">
+              Plaid only exposes 4 — enter the 5th digit once, manually.
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="card-owner">Owner (full name)</Label>
+            <Input
+              id="card-owner"
+              value={ownerName}
+              onChange={(e) => setOwnerName(e.target.value)}
+              placeholder="e.g. Daniel"
+            />
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="card-opened">Opened date</Label>
@@ -322,7 +483,14 @@ export function CardDialog({
             <select
               id="card-account"
               value={accountId}
-              onChange={(e) => setAccountId(e.target.value)}
+              onChange={(e) => {
+                const id = e.target.value
+                setAccountId(id)
+                // Plaid's mask only exposes the last 4 digits — fill them in;
+                // the 5th digit stays a one-time manual entry.
+                const acct = accounts.find((a) => a.id === id)
+                if (acct?.mask) setLast4(acct.mask)
+              }}
               className="h-10 w-full rounded-md border border-border bg-card px-3 text-sm text-foreground focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
             >
               <option value="">Not linked</option>

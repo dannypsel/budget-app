@@ -20,6 +20,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { TransactionList } from '@/features/transactions/TransactionList'
+import { TransactionTagControls } from '@/features/transactions/TransactionTagControls'
 import { ErrorState } from '@/components/ErrorState'
 import { TransfersTab } from '@/features/transactions/TransfersTab'
 import { CategorizeReview } from '@/features/transactions/CategorizeReview'
@@ -53,6 +54,8 @@ import {
   merchantKey,
   sumIncome,
   sumNetSpend,
+  type NeedWant,
+  type SpendPattern,
   type Transaction,
   type UUID,
 } from '@/types/domain'
@@ -352,6 +355,10 @@ export default function AllTransactionsPage() {
   }
   const [filterIds, setFilterIds] = useState<Set<UUID>>(new Set())
   const [hiddenOnly, setHiddenOnly] = useState(false)
+  /** null = all; otherwise only transactions with that Need/Want tag. */
+  const [needWantFilter, setNeedWantFilter] = useState<NeedWant | null>(null)
+  /** null = all; otherwise only transactions with that Fixed/Variable tag. */
+  const [spendPatternFilter, setSpendPatternFilter] = useState<SpendPattern | null>(null)
 
   // Search spans all months (server-side, search_transactions RPC). While a query is
   // active the list operates on the results instead of the month, and the month chips +
@@ -375,7 +382,8 @@ export default function AllTransactionsPage() {
     return { counted, spent: sumNetSpend(counted), income: sumIncome(counted) }
   }, [txns])
 
-  const filterCount = filterIds.size + (hiddenOnly ? 1 : 0)
+  const filterCount =
+    filterIds.size + (hiddenOnly ? 1 : 0) + (needWantFilter ? 1 : 0) + (spendPatternFilter ? 1 : 0)
 
   // The search RPC caps its result at SEARCH_LIMIT rows, and the category/tag filters
   // below run over only that set — so a capped result filters an incomplete list. Flag
@@ -388,9 +396,11 @@ export default function AllTransactionsPage() {
     return activeTxns.filter((t) => {
       if (hiddenOnly && !t.hidden) return false
       if (filterIds.size > 0 && !(t.category_id && filterIds.has(t.category_id))) return false
+      if (needWantFilter && t.need_want !== needWantFilter) return false
+      if (spendPatternFilter && t.spend_pattern !== spendPatternFilter) return false
       return true
     })
-  }, [activeTxns, filterIds, hiddenOnly])
+  }, [activeTxns, filterIds, hiddenOnly, needWantFilter, spendPatternFilter])
 
   // Month filter chips — most recent first, extendable via the "Earlier" button.
   const monthOptions = useMemo(() => {
@@ -533,6 +543,32 @@ export default function AllTransactionsPage() {
             </DropdownMenu>
           </div>
 
+          {/* Need/Want + Fixed/Variable tag filters */}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="eyebrow">Need/Want</span>
+            {(['need', 'want'] as NeedWant[]).map((v) => (
+              <button
+                key={v}
+                onClick={() => setNeedWantFilter((cur) => (cur === v ? null : v))}
+                aria-pressed={needWantFilter === v}
+                className={filterChip(needWantFilter === v)}
+              >
+                {v === 'need' ? 'Need' : 'Want'}
+              </button>
+            ))}
+            <span className="eyebrow ml-3">Fixed/Variable</span>
+            {(['fixed', 'variable'] as SpendPattern[]).map((v) => (
+              <button
+                key={v}
+                onClick={() => setSpendPatternFilter((cur) => (cur === v ? null : v))}
+                aria-pressed={spendPatternFilter === v}
+                className={filterChip(spendPatternFilter === v)}
+              >
+                {v === 'fixed' ? 'Fixed' : 'Variable'}
+              </button>
+            ))}
+          </div>
+
           {/* Month chips — hidden while searching (results span all months) */}
           {!searching && (
             <div ref={chipRowRef} className="no-scrollbar flex gap-2 overflow-x-auto pb-1 pt-0.5">
@@ -623,7 +659,12 @@ export default function AllTransactionsPage() {
                     : 'No transactions match your filters.'}
               </div>
             ) : (
-              <TransactionList transactions={filtered} accounts={accountsById} onSelect={setSelected} />
+              <TransactionList
+                transactions={filtered}
+                accounts={accountsById}
+                onSelect={setSelected}
+                renderTags={(t) => <TransactionTagControls txn={t} />}
+              />
             )}
           </TabsContent>
 

@@ -113,7 +113,10 @@ export default function ChurnCardDetailPage() {
               {card.card_name}
             </h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              {[card.issuer, card.last4 ? `•••• ${card.last4}` : null]
+              {[
+                card.last5 ? `••••• ${card.last5}` : card.last4 ? `•••• ${card.last4}` : null,
+                card.owner_name,
+              ]
                 .filter(Boolean)
                 .join(' · ') || '—'}
             </p>

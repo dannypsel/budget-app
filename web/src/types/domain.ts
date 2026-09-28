@@ -84,6 +84,8 @@ export interface Transaction {
   merchant_lat: number | null
   merchant_lon: number | null
   iso_currency_code: string | null // e.g. "USD", "EUR"; non-USD ⇒ foreign transaction
+  need_want: NeedWant | null // auto-filled by the backend for new syncs; manual override remembered per merchant
+  spend_pattern: SpendPattern | null // fixed vs variable; same auto-fill/override behavior
   categories?: Category | null // embedded relation
   transaction_tags?: TransactionTag[] | null // embedded relation
   transaction_splits?: TransactionSplit[] | null // embedded relation
@@ -441,6 +443,9 @@ export interface Profile {
   ai_provider?: string | null
   /** Confidence threshold (0..1) at/above which the AI verdict auto-applies. */
   ai_confidence_threshold?: number | null
+  /** Spending-plan watched categories (Settings → Watched categories). Added by
+   *  migration; undefined means "not yet set" — UI defaults to the seed list. */
+  watched_categories?: string[] | null
   created_at?: string | null
   updated_at?: string | null
 }
@@ -520,6 +525,8 @@ export interface ChurnCard {
   cancel_by_date: string | null // yyyy-MM-dd
   notes: string | null
   account_id: UUID | null // → accounts.id; links bonus spend tracking to real txns
+  owner_name: string | null // full name of whose physical card this is (household shares cards)
+  last5: string | null // last 5 digits of the card number; Plaid's mask gives the last 4, the 5th is a one-time manual entry
   created_at?: string | null
 }
 
@@ -527,7 +534,7 @@ export type ChurnCardInsert = Pick<ChurnCard, 'card_name'> &
   Partial<
     Pick<
       ChurnCard,
-      'issuer' | 'last4' | 'opened_date' | 'annual_fee' | 'annual_fee_date' | 'cancel_by_date' | 'notes' | 'account_id'
+      'issuer' | 'last4' | 'opened_date' | 'annual_fee' | 'annual_fee_date' | 'cancel_by_date' | 'notes' | 'account_id' | 'owner_name' | 'last5'
     >
   >
 
@@ -585,6 +592,10 @@ export interface ChurnCredit {
   detection_dismissed_transaction_ids: UUID[]
   remind_days_before: number // "credits needing attention" + notification window
   period_start_date: string | null // yyyy-MM-dd; start of the current credit period
+  /** Hidden by the user (Rewards) — excluded from all lists/totals/counts. */
+  is_hidden: boolean
+  /** Short display label like "Amex", "United", "Hyatt"; falls back to card/credit name. */
+  program_label: string | null
   // joined card name (fetchAllChurnCredits embeds churn_cards(card_name))
   churn_cards?: { card_name: string } | null
 }
@@ -604,5 +615,207 @@ export type ChurnCreditInsert = Pick<ChurnCredit, 'card_id' | 'credit_name' | 'a
       | 'detected_transaction_id'
       | 'detection_source'
       | 'detection_dismissed_transaction_ids'
+      | 'is_hidden'
+      | 'program_label'
     >
   >
+
+// ── Discretionary (Daniel-vs-Sara game/bet balances — never part of household
+//  totals or the spending plan; stored in their own tables) ─────────────────
+
+export type DiscretionaryPerson = 'daniel' | 'sara'
+
+export type DiscretionaryEntryType = 'game' | 'purchase' | 'challenge' | 'bet' | 'adjustment'
+
+/** discretionary_game_types row. */
+export interface DiscretionaryGameType {
+  id: UUID
+  name: string
+  created_at?: string | null
+}
+
+/** discretionary_ledger row. Signed payouts: one row holds both sides
+ *  (e.g. Daniel −$10 / Sara +$10). */
+export interface DiscretionaryLedgerEntry {
+  id: UUID
+  occurred_on: string // yyyy-MM-dd
+  entry_type: DiscretionaryEntryType
+  game_type_id: UUID | null
+  winner: 'daniel' | 'sara' | 'tie' | null
+  payout: number | null
+  daniel_amount: number // signed dollars
+  sara_amount: number // signed dollars
+  challenge_id: UUID | null
+  note: string | null
+  created_at?: string | null
+}
+
+export type DiscretionaryLedgerInsert = Pick<
+  DiscretionaryLedgerEntry,
+  'occurred_on' | 'entry_type' | 'daniel_amount' | 'sara_amount'
+> &
+  Partial<
+    Pick<
+      DiscretionaryLedgerEntry,
+      'game_type_id' | 'winner' | 'payout' | 'challenge_id' | 'note'
+    >
+  >
+
+export type ChallengeFrequency = 'daily' | 'weekly'
+export type ChallengeStatus = 'active' | 'completed' | 'failed' | 'overridden'
+
+/** challenges row. */
+export interface Challenge {
+  id: UUID
+  person: DiscretionaryPerson
+  title: string
+  start_date: string // yyyy-MM-dd
+  end_date: string // yyyy-MM-dd
+  frequency: ChallengeFrequency
+  times_per_week: number | null
+  reward: number // positive dollars paid to `person` on completion
+  grace_days: number
+  status: ChallengeStatus
+  created_at?: string | null
+}
+
+export type ChallengeInsert = Pick<
+  Challenge,
+  'person' | 'title' | 'start_date' | 'end_date' | 'frequency' | 'reward'
+> &
+  Partial<Pick<Challenge, 'times_per_week' | 'grace_days' | 'status'>>
+
+/** challenge_checkins row — one per challenge per day. */
+export interface ChallengeCheckin {
+  id: UUID
+  challenge_id: UUID
+  checkin_date: string // yyyy-MM-dd
+  created_at?: string | null
+}
+
+/** reward_points row — manual points balances, one per program/holder. */
+export interface RewardPoints {
+  id: UUID
+  program: string
+  holder: string
+  balance: number // points
+  last_updated: string | null
+  created_at?: string | null
+}
+
+export type RewardPointsInsert = Pick<RewardPoints, 'program' | 'holder' | 'balance'> &
+  Partial<Pick<RewardPoints, 'last_updated'>>
+
+// ── Budgets / Forecast / Retirement / Txn tags (self-hosted budget app) ─────
+
+/** Need vs want tag on a transaction (nullable until the backend auto-fills). */
+export type NeedWant = 'need' | 'want'
+/** Fixed vs variable spend pattern on a transaction. */
+export type SpendPattern = 'fixed' | 'variable'
+
+/** budgets row — one monthly per-category budget target. `month` is the
+ *  first-of-month date; `category` is the category name (text). */
+export interface Budget {
+  id: UUID
+  user_id?: UUID
+  month: string // yyyy-MM-dd, first of month
+  category: string
+  target: number // positive dollars
+  created_at?: string | null
+}
+
+export type BudgetInsert = Pick<Budget, 'month' | 'category' | 'target'>
+
+export type ForecastAdjustmentKind = 'recurring' | 'one_time'
+export type ForecastAdjustmentDirection = 'income' | 'spending'
+
+/** forecast_adjustments row — a named tweak layered onto the forecast baseline.
+ *  Recurring adjustments apply to every month in [start_month, end_month]
+ *  (open ends allowed); one-time adjustments apply to `month` only. All dates
+ *  are first-of-month yyyy-MM-dd strings. */
+export interface ForecastAdjustment {
+  id: UUID
+  user_id?: UUID
+  kind: ForecastAdjustmentKind
+  direction: ForecastAdjustmentDirection
+  name: string
+  amount: number // positive dollars
+  start_month: string | null
+  end_month: string | null
+  month: string | null
+  created_at?: string | null
+}
+
+export type ForecastAdjustmentInsert = Pick<
+  ForecastAdjustment,
+  'kind' | 'direction' | 'name' | 'amount'
+> &
+  Partial<Pick<ForecastAdjustment, 'start_month' | 'end_month' | 'month'>>
+
+/** Tax treatment of a retirement account bucket. */
+export type RetirementTaxTreatment = 'taxable' | 'traditional' | 'roth'
+
+/** One account bucket in the retirement model. */
+export interface RetirementAccountInput {
+  /** Client-generated key (uuid). */
+  id: string
+  name: string
+  balance: number // today's dollars
+  annualContribution: number // per year, today's dollars (inflated yearly)
+  taxTreatment: RetirementTaxTreatment
+  /** Optional per-account return override %, null = use the global return. */
+  returnOverridePct: number | null
+}
+
+/** A one-time addition to an account in a given calendar year (that year's dollars). */
+export interface RetirementOneTime {
+  id: string
+  amount: number
+  year: number // calendar year
+  accountId: string
+}
+
+/** The full retirement model input — stored as JSON in retirement_scenarios. */
+export interface RetirementInputs {
+  currentAge: number
+  retirementAge: number
+  planThroughAge: number
+  preRetirementReturnPct: number
+  postRetirementReturnPct: number
+  inflationPct: number
+  /** Annual, today's dollars (inflated yearly in the projection). */
+  preRetirementIncome: number
+  preRetirementSpending: number
+  postRetirementSpending: number
+  /** Expected tax rate on Traditional withdrawals in retirement, %. */
+  retirementTaxRatePct: number
+  accounts: RetirementAccountInput[]
+  oneTimes: RetirementOneTime[]
+}
+
+/** retirement_scenarios row — a saved named retirement model. */
+export interface RetirementScenario {
+  id: UUID
+  user_id?: UUID
+  name: string
+  inputs: RetirementInputs
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export type RetirementScenarioInsert = Pick<RetirementScenario, 'name' | 'inputs'>
+
+/** merchant_txn_tags row — learned need/want + fixed/variable tags per merchant. */
+export interface MerchantTxnTag {
+  id: UUID
+  user_id?: UUID
+  merchant_key: string
+  need_want: NeedWant | null
+  spend_pattern: SpendPattern | null
+  updated_at?: string | null
+}
+
+export type MerchantTxnTagInsert = Pick<
+  MerchantTxnTag,
+  'merchant_key' | 'need_want' | 'spend_pattern'
+>
