@@ -20,7 +20,7 @@ import { formatCurrency } from '@/lib/money'
 import { cn } from '@/lib/utils'
 
 /** Defaults when the profile has no saved watched categories (names, lowercase). */
-const WATCHED_DEFAULT_NAMES = ['shopping', 'eating out', 'groceries']
+const WATCHED_DEFAULT_NAMES = ['shopping', 'dining & drinks', 'groceries']
 
 function monthLabel(today: Date) {
   return today.toLocaleString(undefined, { month: 'long', year: 'numeric' })

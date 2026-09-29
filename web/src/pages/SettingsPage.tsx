@@ -1962,7 +1962,7 @@ function HiddenCreditsSection({ onBack }: { onBack: () => void }) {
 
 // ─── Watched categories: spending-plan subset ───────────────────────────────
 
-const WATCHED_DEFAULTS = ['shopping', 'eating out', 'groceries']
+const WATCHED_DEFAULTS = ['shopping', 'dining & drinks', 'groceries']
 
 function WatchedCategoriesSection({ onBack }: { onBack: () => void }) {
   const { data: profile } = useMyProfile()

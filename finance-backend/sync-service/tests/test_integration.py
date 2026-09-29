@@ -128,8 +128,13 @@ def test_signup_trigger_seeds_categories(make_user):
     cats = client.table("categories").select("name, kind").execute().data
     by_name = {c["name"]: c["kind"] for c in cats}
 
-    assert set(by_name) == {"Groceries", "Dining", "Rent", "Utilities",
-                            "Transport", "Other", "Income"}, by_name
+    assert set(by_name) == {"Groceries", "Dining & Drinks", "Rent", "Utilities",
+                            "Auto & Transport", "Home", "Health",
+                            "Charity & Donations", "Education", "Travel",
+                            "Shopping", "Taxes", "Polie Business", "Other",
+                            "Fees & Charges", "Entertainment", "Sara",
+                            "Subscriptions", "Pets", "Cash & ATM", "Financial",
+                            "Daniel", "Hobby", "Transfer", "Income"}, by_name
     assert by_name["Income"] == "income"
     assert all(k == "spend" for n, k in by_name.items() if n != "Income")
 

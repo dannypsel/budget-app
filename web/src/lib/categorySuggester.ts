@@ -9,13 +9,13 @@ import { merchantKey } from '@/types/domain'
 // Plaid PFC detailed -> our category name (finer than primary; checked first).
 const detailMap: Record<string, string> = {
   FOOD_AND_DRINK_GROCERIES: 'Groceries',
-  FOOD_AND_DRINK_RESTAURANT: 'Dining',
-  FOOD_AND_DRINK_FAST_FOOD: 'Dining',
-  FOOD_AND_DRINK_COFFEE: 'Dining',
-  FOOD_AND_DRINK_BEER_WINE_AND_LIQUOR: 'Dining',
-  TRANSPORTATION_TAXIS_AND_RIDE_SHARES: 'Transport',
-  TRANSPORTATION_PUBLIC_TRANSIT: 'Transport',
-  TRANSPORTATION_GAS: 'Transport',
+  FOOD_AND_DRINK_RESTAURANT: 'Dining & Drinks',
+  FOOD_AND_DRINK_FAST_FOOD: 'Dining & Drinks',
+  FOOD_AND_DRINK_COFFEE: 'Dining & Drinks',
+  FOOD_AND_DRINK_BEER_WINE_AND_LIQUOR: 'Dining & Drinks',
+  TRANSPORTATION_TAXIS_AND_RIDE_SHARES: 'Auto & Transport',
+  TRANSPORTATION_PUBLIC_TRANSIT: 'Auto & Transport',
+  TRANSPORTATION_GAS: 'Auto & Transport',
   RENT_AND_UTILITIES_RENT: 'Rent',
 }
 
@@ -23,9 +23,9 @@ const detailMap: Record<string, string> = {
 const plaidMap: Record<string, string> = {
   INCOME: 'Income',
   TRANSFER_IN: 'Income',
-  FOOD_AND_DRINK: 'Dining',
-  TRANSPORTATION: 'Transport',
-  TRAVEL: 'Transport',
+  FOOD_AND_DRINK: 'Dining & Drinks',
+  TRANSPORTATION: 'Auto & Transport',
+  TRAVEL: 'Travel',
   RENT_AND_UTILITIES: 'Utilities',
 }
 

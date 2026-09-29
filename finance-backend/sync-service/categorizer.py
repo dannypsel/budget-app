@@ -15,6 +15,7 @@ CATEGORY_TAG_DEFAULTS: dict[str, tuple[str, str]] = {
     "utilities": ("need", "variable"),
     "insurance": ("need", "fixed"),
     "dining": ("want", "variable"),
+    "dining & drinks": ("want", "variable"),  # renamed from "Dining"; keep both
     "restaurants": ("want", "variable"),
     "eating out": ("want", "variable"),
     "subscriptions": ("want", "fixed"),

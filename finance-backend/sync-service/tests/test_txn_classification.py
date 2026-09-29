@@ -85,6 +85,7 @@ def _txn(tid, merchant, amount=25.0, **kw):
         ("utilities", ("need", "variable")),
         ("Insurance", ("need", "fixed")),
         ("Dining", ("want", "variable")),
+        ("dining & drinks", ("want", "variable")),
         ("Restaurants", ("want", "variable")),
         ("eating out", ("want", "variable")),
         ("Subscriptions", ("want", "fixed")),

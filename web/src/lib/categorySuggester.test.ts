@@ -10,7 +10,7 @@ import {
 import type { Category, Transaction } from '@/types/domain'
 import { makeRule } from '@/test/factories'
 
-const names = ['Groceries', 'Dining', 'Rent', 'Utilities', 'Transport', 'Other', 'Income']
+const names = ['Groceries', 'Dining & Drinks', 'Rent', 'Utilities', 'Auto & Transport', 'Other', 'Income']
 const categories: Category[] = names.map((name, i) => ({
   id: `cat-${name}`,
   name,
@@ -39,17 +39,17 @@ describe('autoMatch precedence', () => {
       amount: -100, // would otherwise be Income by sign
       plaid_category_detail: 'FOOD_AND_DRINK_GROCERIES', // would otherwise be Groceries
     })
-    const memory = { starbucks: cat('Dining') }
-    expect(autoMatch(t, memory, [], categories)).toBe(cat('Dining'))
+    const memory = { starbucks: cat('Dining & Drinks') }
+    expect(autoMatch(t, memory, [], categories)).toBe(cat('Dining & Drinks'))
   })
 
   it('2. keyword rule matches, longest keyword first', () => {
     const t = txn({ merchant_name: 'Shell Gas Station' })
     const rules = [
       makeRule({ id: '1', keyword: 'gas', category_id: cat('Utilities') }),
-      makeRule({ id: '2', keyword: 'shell gas', category_id: cat('Transport') }),
+      makeRule({ id: '2', keyword: 'shell gas', category_id: cat('Auto & Transport') }),
     ]
-    expect(autoMatch(t, {}, rules, categories)).toBe(cat('Transport'))
+    expect(autoMatch(t, {}, rules, categories)).toBe(cat('Auto & Transport'))
   })
 
   it('3. income by sign when amount < 0', () => {
@@ -59,7 +59,7 @@ describe('autoMatch precedence', () => {
 
   it('4. Plaid detailed PFC map', () => {
     const t = txn({ merchant_name: 'X', plaid_category_detail: 'TRANSPORTATION_GAS' })
-    expect(autoMatch(t, {}, [], categories)).toBe(cat('Transport'))
+    expect(autoMatch(t, {}, [], categories)).toBe(cat('Auto & Transport'))
   })
 
   it('5. Plaid primary PFC map (when no detail match)', () => {
@@ -81,7 +81,7 @@ describe('suggest', () => {
 
   it('returns the matched category otherwise', () => {
     const t = txn({ merchant_name: 'X', plaid_category_detail: 'FOOD_AND_DRINK_COFFEE' })
-    expect(suggest(t, {}, [], categories)?.name).toBe('Dining')
+    expect(suggest(t, {}, [], categories)?.name).toBe('Dining & Drinks')
   })
 })
 
@@ -97,7 +97,7 @@ describe('ruleMatches conditions', () => {
   })
 
   it('legacy rule (all conditions null) matches on keyword alone — backward compatible', () => {
-    const legacy = makeRule({ keyword: 'gas', category_id: cat('Transport') })
+    const legacy = makeRule({ keyword: 'gas', category_id: cat('Auto & Transport') })
     expect(ruleMatches(legacy, txn({ merchant_name: 'Shell Gas', amount: 40 }))).toBe(true)
     expect(ruleMatches(legacy, txn({ merchant_name: 'Grocery', amount: 40 }))).toBe(false)
   })
@@ -121,7 +121,7 @@ describe('ruleMatches conditions', () => {
   })
 
   it('honors direction "out" (spend) and a max bound (between)', () => {
-    const r = makeRule({ keyword: 'coffee', category_id: cat('Dining'), direction: 'out', min_amount: 5, max_amount: 10 })
+    const r = makeRule({ keyword: 'coffee', category_id: cat('Dining & Drinks'), direction: 'out', min_amount: 5, max_amount: 10 })
     expect(ruleMatches(r, txn({ merchant_name: 'Coffee', amount: 7 }))).toBe(true)
     expect(ruleMatches(r, txn({ merchant_name: 'Coffee', amount: 12 }))).toBe(false) // over max
     expect(ruleMatches(r, txn({ merchant_name: 'Coffee', amount: -7 }))).toBe(false) // money in, not out
@@ -157,9 +157,9 @@ describe('matchRule + resolveCategorization', () => {
     const t = txn({ merchant_name: 'Shell Gas Station', amount: 40 })
     const rules = [
       makeRule({ id: '1', keyword: 'gas', category_id: cat('Utilities') }),
-      makeRule({ id: '2', keyword: 'shell gas', category_id: cat('Transport') }),
+      makeRule({ id: '2', keyword: 'shell gas', category_id: cat('Auto & Transport') }),
     ]
-    expect(matchRule(t, rules)?.category_id).toBe(cat('Transport'))
+    expect(matchRule(t, rules)?.category_id).toBe(cat('Auto & Transport'))
   })
 
   it('a reimbursement-only rule (no category) flags without setting a category', () => {
