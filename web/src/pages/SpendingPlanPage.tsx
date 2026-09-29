@@ -98,8 +98,8 @@ export default function SpendingPlanPage() {
           {formatCurrency(plan.safeToSpend)}
         </p>
         <p className="mt-2 text-sm text-muted-foreground">
-          {plan.daysRemaining} {plan.daysRemaining === 1 ? 'day' : 'days'} left · about{' '}
-          {formatCurrency(plan.perDay)} per day
+          {plan.daysRemaining} {plan.daysRemaining === 1 ? 'day' : 'days'} left in{' '}
+          {monthLabel(today)}
         </p>
         <div className="mt-4">
           <ProgressBar
