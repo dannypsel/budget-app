@@ -587,6 +587,23 @@ def _refresh_accounts_and_balances(plaid, supabase, access_token, item_id, user_
         })
         balances_by_plaid_id[pid] = acct['balances']
 
+    # The `name` column is client-owned (Settings → Accounts → rename): Plaid's
+    # name only seeds brand-new accounts. Without this guard the
+    # merge-duplicates upsert below would silently revert user renames on
+    # every sync.
+    if account_rows:
+        existing_names = {
+            r['plaid_account_id']: r['name']
+            for r in supabase.table('accounts')
+                .select('plaid_account_id, name')
+                .eq('user_id', user_id)
+                .in_('plaid_account_id', [a['plaid_account_id'] for a in account_rows])
+                .execute().data
+        }
+        for row in account_rows:
+            if row['plaid_account_id'] in existing_names:
+                row['name'] = existing_names[row['plaid_account_id']]
+
     # F2/F3: one batch upsert; the returned rows carry the generated ids → map.
     upserted = supabase.table('accounts').upsert(
         account_rows, on_conflict='plaid_account_id'
