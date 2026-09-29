@@ -21,6 +21,9 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { ProgressBar } from '@/components/finance/ProgressBar'
+import AccountsOverview from '@/components/dashboard/AccountsOverview'
+import RecentTransactions from '@/components/dashboard/RecentTransactions'
+import WatchedSpendingPlan from '@/components/dashboard/WatchedSpendingPlan'
 import {
   usePlannedIncome,
   useSavePlannedIncome,
@@ -131,7 +134,11 @@ export default function SpendingPlanPage() {
         </dl>
       </section>
 
+      <AccountsOverview />
+      <WatchedSpendingPlan />
+
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <RecentTransactions />
         {/* Planned income */}
         <section className="card-surface p-6">
           <div className="mb-4 flex items-center justify-between">
