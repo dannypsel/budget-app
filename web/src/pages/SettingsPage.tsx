@@ -45,6 +45,7 @@ import {
 import { useTheme } from 'next-themes'
 import { toast } from 'sonner'
 import { InstitutionLogo } from '@/components/finance/InstitutionLogo'
+import { PlaidCredentialsCard } from '@/components/finance/PlaidCredentialsCard'
 import { CategoryIcon } from '@/components/finance/CategoryIcon'
 import { BackfillPromptDialog } from '@/components/finance/BackfillPromptDialog'
 import { NewAccountDialog } from '@/components/finance/NewAccountDialog'
@@ -298,6 +299,7 @@ export default function SettingsPage() {
         onBack={() => setSection(null)}
         addBank={addBank}
         reconnectBank={reconnectBank}
+        highlightSetup={searchParams.get('setup') === '1'}
       />
     )
   if (section === 'categories') return <CategoriesSection onBack={() => setSection(null)} />
@@ -663,10 +665,12 @@ function AccountsSection({
   onBack,
   addBank,
   reconnectBank,
+  highlightSetup = false,
 }: {
   onBack: () => void
   addBank: () => void
   reconnectBank: (itemId: string) => void
+  highlightSetup?: boolean
 }) {
   const queryClient = useQueryClient()
   const { data: items = [] } = usePlaidItems()
@@ -735,6 +739,7 @@ function AccountsSection({
   return (
     <SectionView title="Accounts" onBack={onBack}>
       <div className="space-y-6">
+        <PlaidCredentialsCard highlight={highlightSetup} />
         {items.length === 0 ? (
           <div className="card-surface rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
             No banks linked yet.
