@@ -740,6 +740,21 @@ function AccountsSection({
     <SectionView title="Accounts" onBack={onBack}>
       <div className="space-y-6">
         <PlaidCredentialsCard highlight={highlightSetup} />
+        <section className="card-surface p-2 md:p-3">
+          <div className="space-y-1">
+            <SettingsRow
+              icon={<Plus aria-hidden className="h-5 w-5" />}
+              label="Add a bank"
+              meta="Plaid"
+              onClick={addBank}
+            />
+            <SettingsRow
+              icon={<Pencil aria-hidden className="h-5 w-5" />}
+              label="Add manual account"
+              onClick={() => setManualOpen(true)}
+            />
+          </div>
+        </section>
         {items.length === 0 ? (
           <div className="card-surface rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
             No banks linked yet.
@@ -807,21 +822,6 @@ function AccountsSection({
           ))
         )}
 
-        <section className="card-surface p-2 md:p-3">
-          <div className="space-y-1">
-            <SettingsRow
-              icon={<Plus aria-hidden className="h-5 w-5" />}
-              label="Add a bank"
-              meta="Plaid"
-              onClick={addBank}
-            />
-            <SettingsRow
-              icon={<Pencil aria-hidden className="h-5 w-5" />}
-              label="Add manual account"
-              onClick={() => setManualOpen(true)}
-            />
-          </div>
-        </section>
       </div>
 
       <NewAccountDialog open={manualOpen} onOpenChange={setManualOpen} />
