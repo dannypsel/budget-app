@@ -1,8 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
-  <!-- PocketLens brand mark: a lens on a sky-blue tile. Colors are the brand
-       palette only — Sky Blue (#008DD5), Bright Snow (#F7F7F7), Onyx (#111111). -->
-  <rect width="32" height="32" rx="7" fill="#008DD5"/>
-  <circle cx="16" cy="16" r="8" fill="none" stroke="#F7F7F7" stroke-width="2.6"/>
-  <circle cx="16" cy="16" r="4" fill="#111111"/>
-  <circle cx="13" cy="13" r="1.5" fill="#F7F7F7"/>
+  <!-- PocketLens brand mark: a "P" whose bowl is a magnifying-glass lens.
+       Terracotta tile (#CA5D37), cream glyph (#FFEFD7), sage accent (#91A783). -->
+  <rect width="32" height="32" rx="7" fill="#CA5D37"/>
+  <rect x="8.6" y="7" width="4.6" height="18" fill="#FFEFD7"/>
+  <circle cx="19.6" cy="13.4" r="6.6" fill="none" stroke="#FFEFD7" stroke-width="3.1"/>
+  <line x1="24.1" y1="18" x2="27.8" y2="21.7" stroke="#FFEFD7" stroke-width="3.1" stroke-linecap="round"/>
+  <circle cx="22.4" cy="20.6" r="1.7" fill="#91A783"/>
 </svg>
