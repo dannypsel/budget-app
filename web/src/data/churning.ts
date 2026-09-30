@@ -6,6 +6,7 @@
 // amount < 0 = income/inflow.
 
 import { supabase } from '@/lib/supabase'
+import { netQualifyingSpend } from '@/lib/churning'
 import type {
   ChurnBonus,
   ChurnBonusInsert,
@@ -225,10 +226,10 @@ export async function detectCreditsAfterImport(): Promise<number> {
 
 // ── qualifying spend ────────────────────────────────────────────────────────
 
-/** Outflow transactions on the card's linked account inside the bonus window, with
- *  the same exclusions as every spend total: rows with exclude_from_totals=true
- *  (which is how linked transfer legs are excluded) are dropped, and transfer
- *  legs are dropped explicitly too. Credits (amount < 0) never count. */
+/** Net qualifying spend on the card's linked account inside the bonus window:
+ *  outflows minus reimbursements/refunds (bill payments are neither).
+ *  Same exclusions as every spend total, plus pending rows (authorizations
+ *  are not spend yet). */
 export async function fetchQualifyingSpend(opts: {
   accountId: UUID
   startDate: string // yyyy-MM-dd, inclusive
@@ -236,17 +237,21 @@ export async function fetchQualifyingSpend(opts: {
 }): Promise<number> {
   const { data, error } = await supabase
     .from('transactions')
-    .select('amount')
+    .select('amount, plaid_category_detail, merchant_name, description')
     .eq('account_id', opts.accountId)
     .gte('effective_date', opts.startDate)
     .lte('effective_date', opts.endDate)
     .eq('exclude_from_totals', false)
     .is('transfer_group_id', null)
-    .gt('amount', 0)
+    .eq('pending', false)
   if (error) throw error
-  return ((data ?? []) as { amount: number | string }[]).reduce(
-    (s, r) => s + Number(r.amount),
-    0,
+  return netQualifyingSpend(
+    (data ?? []) as {
+      amount: number | string
+      plaid_category_detail: string | null
+      merchant_name: string | null
+      description: string | null
+    }[],
   )
 }
 
@@ -259,9 +264,10 @@ export interface QualifyingWindow {
 }
 
 /** Qualifying spend for several (account, window) pairs with the same
- *  exclusions as fetchQualifyingSpend. One query per distinct account covers the
- *  union of its windows; per-window sums are computed client-side. Returns a
- *  map from the caller's key → qualifying spend (0 when unknown). */
+ *  exclusions as fetchQualifyingSpend (net of reimbursements, no pending).
+ *  One query per distinct account covers the union of its windows;
+ *  per-window sums are computed client-side. Returns a map from the
+ *  caller's key → qualifying spend (0 when unknown). */
 export async function fetchQualifyingSpendBatch(
   windows: QualifyingWindow[],
 ): Promise<Map<string, number>> {
@@ -283,24 +289,26 @@ export async function fetchQualifyingSpendBatch(
   for (const [accountId, { start, end, list }] of byAccount) {
     const { data, error } = await supabase
       .from('transactions')
-      .select('amount, effective_date')
+      .select('amount, effective_date, plaid_category_detail, merchant_name, description')
       .eq('account_id', accountId)
       .gte('effective_date', start)
       .lte('effective_date', end)
       .eq('exclude_from_totals', false)
       .is('transfer_group_id', null)
-      .gt('amount', 0)
+      .eq('pending', false)
     if (error) throw error
-    const rows = (data ?? []) as { amount: number | string; effective_date: string }[]
+    const rows = (data ?? []) as {
+      amount: number | string
+      effective_date: string
+      plaid_category_detail: string | null
+      merchant_name: string | null
+      description: string | null
+    }[]
     for (const w of list) {
-      const sum = rows.reduce(
-        (s, r) =>
-          r.effective_date >= w.startDate && r.effective_date <= w.endDate
-            ? s + Number(r.amount)
-            : s,
-        0,
+      const inWindow = rows.filter(
+        (r) => r.effective_date >= w.startDate && r.effective_date <= w.endDate,
       )
-      totals.set(w.key, sum)
+      totals.set(w.key, netQualifyingSpend(inWindow))
     }
   }
   return totals

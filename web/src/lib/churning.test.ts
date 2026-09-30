@@ -9,6 +9,8 @@ import {
   creditRemaining,
   creditUnusedPillText,
   daysUntil,
+  isCardBillPayment,
+  netQualifyingSpend,
   parseKeywordList,
 } from './churning'
 import type { ChurnBonus, ChurnCard, ChurnCredit } from '@/types/domain'
@@ -269,5 +271,75 @@ describe('parseKeywordList', () => {
   })
   it('returns [] for blank input', () => {
     expect(parseKeywordList('  , ')).toEqual([])
+  })
+})
+
+describe('netQualifyingSpend', () => {
+  const row = (over: Record<string, unknown> = {}) => ({
+    amount: 100,
+    plaid_category_detail: null,
+    merchant_name: 'WHOLE FOODS',
+    description: 'WHOLE FOODS',
+    ...over,
+  })
+
+  it('sums outflows', () => {
+    expect(netQualifyingSpend([row({ amount: 100 }), row({ amount: 25.5 })])).toBe(125.5)
+  })
+  it('subtracts reimbursements/refunds', () => {
+    expect(
+      netQualifyingSpend([
+        row({ amount: 500 }),
+        row({ amount: -120, merchant_name: 'AMEX', description: 'AMEX Airline Fee Reimbursement' }),
+        row({ amount: -30, merchant_name: 'DELTA', description: 'Refund' }),
+      ]),
+    ).toBe(350)
+  })
+  it('ignores bill payments identified by Plaid detail', () => {
+    expect(
+      netQualifyingSpend([
+        row({ amount: 500 }),
+        row({
+          amount: -500,
+          plaid_category_detail: 'LOAN_PAYMENTS_CREDIT_CARD_PAYMENT',
+          merchant_name: 'AMEX EPAYMENT',
+          description: 'ACH PMT',
+        }),
+      ]),
+    ).toBe(500)
+  })
+  it('ignores bill payments by name fallback when detail is missing', () => {
+    expect(
+      netQualifyingSpend([
+        row({ amount: 500 }),
+        row({ amount: -500, merchant_name: 'AMEX EPAYMENT ACH PMT', description: '' }),
+      ]),
+    ).toBe(500)
+  })
+  it('never goes negative', () => {
+    expect(netQualifyingSpend([row({ amount: -50, description: 'Refund' })])).toBe(0)
+  })
+  it('rounds to cents', () => {
+    expect(netQualifyingSpend([row({ amount: 10.005 })])).toBe(10.01)
+  })
+})
+
+describe('isCardBillPayment', () => {
+  it('flags Plaid credit-card-payment detail', () => {
+    expect(
+      isCardBillPayment({ plaid_category_detail: 'LOAN_PAYMENTS_CREDIT_CARD_PAYMENT' }),
+    ).toBe(true)
+  })
+  it('does not flag other details', () => {
+    expect(
+      isCardBillPayment({
+        plaid_category_detail: 'TRAVEL_AIRLINES',
+        description: 'Delta Air Lines Reimbursement',
+      }),
+    ).toBe(false)
+  })
+  it('sniffs autopay phrasing when detail is null', () => {
+    expect(isCardBillPayment({ description: 'Online Payment Thank You' })).toBe(true)
+    expect(isCardBillPayment({ description: 'AMEX Dining Credit Reimbursement' })).toBe(false)
   })
 })

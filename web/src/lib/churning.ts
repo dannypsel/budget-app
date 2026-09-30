@@ -181,6 +181,43 @@ export function parseKeywordList(input: string): string[] {
     .filter((k) => k.length > 0)
 }
 
+/** Bonus spend: net of reimbursements — pure helpers. */
+
+/** A money-in row that is a bill payment (not a refund/credit): paying the
+ *  card down is neither spend nor a reimbursement. Plaid marks these
+ *  LOAN_PAYMENTS_CREDIT_CARD_PAYMENT; rows without a detail fall back to a
+ *  name sniff for the usual e-payment phrasing. */
+export function isCardBillPayment(row: {
+  plaid_category_detail?: string | null
+  merchant_name?: string | null
+  description?: string | null
+}): boolean {
+  if (row.plaid_category_detail === 'LOAN_PAYMENTS_CREDIT_CARD_PAYMENT') return true
+  const hay = `${row.merchant_name ?? ''} ${row.description ?? ''}`.toLowerCase()
+  return /epayment|e-payment|autopay|auto[\s-]?pay|online payment|bill pay/.test(hay)
+}
+
+/** Net qualifying spend for bonus MSR from already-fetched rows: outflows
+ *  minus reimbursements/refunds (money-in that is not a bill payment).
+ *  The caller pre-filters to the card's linked account + bonus window and
+ *  drops pending / excluded / transfer-leg rows. Never negative. */
+export function netQualifyingSpend(
+  rows: {
+    amount: number | string
+    plaid_category_detail?: string | null
+    merchant_name?: string | null
+    description?: string | null
+  }[],
+): number {
+  let total = 0
+  for (const r of rows) {
+    const amt = Number(r.amount)
+    if (amt > 0) total += amt
+    else if (amt < 0 && !isCardBillPayment(r)) total += amt // amt < 0 → subtracts
+  }
+  return Math.max(0, Math.round(total * 100) / 100)
+}
+
 /** Physical-card identity: product name + last 5 digits + owner full name (the
  *  household shares cards, so the owner only identifies which physical card to
  *  grab). Falls back to last4 when last5 was never entered. */
