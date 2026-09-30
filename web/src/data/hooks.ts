@@ -1081,14 +1081,16 @@ export function useBonusQualifyingSpend(
   accountId: UUID | null,
   startDate: string | null,
   endDate: string | null,
+  annualFee?: number | string | null,
 ) {
   return useQuery({
-    queryKey: ['sb', 'churning', 'qualifyingSpend', accountId, startDate, endDate] as const,
+    queryKey: ['sb', 'churning', 'qualifyingSpend', accountId, startDate, endDate, annualFee] as const,
     queryFn: () =>
       churningApi.fetchQualifyingSpend({
         accountId: accountId!,
         startDate: startDate!,
         endDate: endDate!,
+        annualFee,
       }),
     enabled: accountId != null && startDate != null && endDate != null,
   })

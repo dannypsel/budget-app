@@ -143,7 +143,7 @@ function CardsThatNeedToBeUsed({
         const card = cards.find((c) => c.id === b.card_id)
         const win = card ? bonusWindow(card, b) : null
         if (!card?.account_id || !win) return []
-        return [{ key: b.id, accountId: card.account_id, startDate: win.start, endDate: win.end }]
+        return [{ key: b.id, accountId: card.account_id, startDate: win.start, endDate: win.end, annualFee: card.annual_fee }]
       }),
     [inProgress, cards],
   )

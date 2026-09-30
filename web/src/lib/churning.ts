@@ -197,8 +197,32 @@ export function isCardBillPayment(row: {
   return /epayment|e-payment|autopay|auto[\s-]?pay|online payment|bill pay/.test(hay)
 }
 
+/** The card's annual-fee charge: never qualifying MSR spend. Detected by
+ *  fee phrasing ("annual membership fee", "membership fee", ...); when the
+ *  card's annual_fee is known, an exact-amount match on any *fee*
+ *  description also counts, so oddly-worded fee postings are still caught. */
+export function isAnnualFeeCharge(
+  row: {
+    amount: number | string
+    merchant_name?: string | null
+    description?: string | null
+  },
+  annualFee?: number | string | null,
+): boolean {
+  const hay = `${row.merchant_name ?? ''} ${row.description ?? ''}`.toLowerCase()
+  if (/annual[\s-]?fee|membership fee/.test(hay)) return true
+  const fee = annualFee == null || annualFee === '' ? NaN : Number(annualFee)
+  return (
+    Number.isFinite(fee) &&
+    fee > 0 &&
+    Math.abs(Number(row.amount) - fee) < 0.005 &&
+    hay.includes('fee')
+  )
+}
+
 /** Net qualifying spend for bonus MSR from already-fetched rows: outflows
- *  minus reimbursements/refunds (money-in that is not a bill payment).
+ *  minus reimbursements/refunds (money-in that is not a bill payment),
+ *  with the card's annual-fee charge always excluded.
  *  The caller pre-filters to the card's linked account + bonus window and
  *  drops pending / excluded / transfer-leg rows. Never negative. */
 export function netQualifyingSpend(
@@ -208,9 +232,11 @@ export function netQualifyingSpend(
     merchant_name?: string | null
     description?: string | null
   }[],
+  annualFee?: number | string | null,
 ): number {
   let total = 0
   for (const r of rows) {
+    if (isAnnualFeeCharge(r, annualFee)) continue
     const amt = Number(r.amount)
     if (amt > 0) total += amt
     else if (amt < 0 && !isCardBillPayment(r)) total += amt // amt < 0 → subtracts

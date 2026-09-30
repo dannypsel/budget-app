@@ -9,6 +9,7 @@ import {
   creditRemaining,
   creditUnusedPillText,
   daysUntil,
+  isAnnualFeeCharge,
   isCardBillPayment,
   netQualifyingSpend,
   parseKeywordList,
@@ -321,6 +322,61 @@ describe('netQualifyingSpend', () => {
   })
   it('rounds to cents', () => {
     expect(netQualifyingSpend([row({ amount: 10.005 })])).toBe(10.01)
+  })
+  it('always excludes the annual-fee charge', () => {
+    expect(
+      netQualifyingSpend(
+        [
+          row({ amount: 1000 }),
+          row({ amount: 695, merchant_name: 'AMEX', description: 'ANNUAL MEMBERSHIP FEE' }),
+        ],
+        695,
+      ),
+    ).toBe(1000)
+  })
+  it('excludes the annual fee by description even when the card fee is unknown', () => {
+    expect(
+      netQualifyingSpend([
+        row({ amount: 1000 }),
+        row({ amount: 95, merchant_name: 'CHASE', description: 'Annual Membership Fee' }),
+      ]),
+    ).toBe(1000)
+  })
+  it('excludes an oddly-worded fee posting when the amount matches the card fee', () => {
+    expect(
+      netQualifyingSpend(
+        [row({ amount: 1000 }), row({ amount: 99, description: 'AADVANTAGE PROGRAM FEE' })],
+        99,
+      ),
+    ).toBe(1000)
+  })
+  it('does not exclude a same-amount purchase without fee wording', () => {
+    expect(
+      netQualifyingSpend([row({ amount: 695, description: 'DELTA AIR LINES' })], 695),
+    ).toBe(695)
+  })
+})
+
+describe('isAnnualFeeCharge', () => {
+  const row = (over: Record<string, unknown> = {}) => ({
+    amount: 695,
+    merchant_name: null,
+    description: null,
+    ...over,
+  })
+
+  it('flags annual membership fee phrasing', () => {
+    expect(isAnnualFeeCharge(row({ description: 'ANNUAL MEMBERSHIP FEE' }), 695)).toBe(true)
+    expect(isAnnualFeeCharge(row({ description: 'Annual Fee' }), null)).toBe(true)
+    expect(isAnnualFeeCharge(row({ merchant_name: 'AMEX MEMBERSHIP FEE' }), null)).toBe(true)
+  })
+  it('flags exact-amount fee postings when the card fee is known', () => {
+    expect(isAnnualFeeCharge(row({ amount: 99, description: 'PROGRAM FEE' }), 99)).toBe(true)
+  })
+  it('does not flag ordinary spend', () => {
+    expect(isAnnualFeeCharge(row({ amount: 695, description: 'WHOLE FOODS' }), 695)).toBe(false)
+    expect(isAnnualFeeCharge(row({ amount: 50, description: 'ANNUAL ZOO PASS' }), 695)).toBe(false)
+    expect(isAnnualFeeCharge(row({ amount: 100, description: 'FEE FREE CHECKING' }), 695)).toBe(false)
   })
 })
 

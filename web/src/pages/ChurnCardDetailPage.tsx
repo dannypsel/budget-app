@@ -292,6 +292,7 @@ function BonusRow({
     card.account_id,
     window?.start ?? null,
     window?.end ?? null,
+    card.annual_fee,
   )
   const progress = useMemo(
     () => bonusProgress(bonus, qualifyingSpend),

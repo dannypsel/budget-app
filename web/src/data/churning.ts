@@ -227,13 +227,15 @@ export async function detectCreditsAfterImport(): Promise<number> {
 // ── qualifying spend ────────────────────────────────────────────────────────
 
 /** Net qualifying spend on the card's linked account inside the bonus window:
- *  outflows minus reimbursements/refunds (bill payments are neither).
+ *  outflows minus reimbursements/refunds (bill payments are neither), with
+ *  the card's annual-fee charge always excluded.
  *  Same exclusions as every spend total, plus pending rows (authorizations
  *  are not spend yet). */
 export async function fetchQualifyingSpend(opts: {
   accountId: UUID
   startDate: string // yyyy-MM-dd, inclusive
   endDate: string // yyyy-MM-dd, inclusive
+  annualFee?: number | string | null
 }): Promise<number> {
   const { data, error } = await supabase
     .from('transactions')
@@ -252,6 +254,7 @@ export async function fetchQualifyingSpend(opts: {
       merchant_name: string | null
       description: string | null
     }[],
+    opts.annualFee,
   )
 }
 
@@ -261,10 +264,13 @@ export interface QualifyingWindow {
   accountId: UUID
   startDate: string // yyyy-MM-dd, inclusive
   endDate: string // yyyy-MM-dd, inclusive
+  /** Card's annual fee — its charge is always excluded from qualifying spend. */
+  annualFee?: number | string | null
 }
 
 /** Qualifying spend for several (account, window) pairs with the same
- *  exclusions as fetchQualifyingSpend (net of reimbursements, no pending).
+ *  exclusions as fetchQualifyingSpend (net of reimbursements, no pending,
+ *  annual-fee charge excluded).
  *  One query per distinct account covers the union of its windows;
  *  per-window sums are computed client-side. Returns a map from the
  *  caller's key → qualifying spend (0 when unknown). */
@@ -308,7 +314,7 @@ export async function fetchQualifyingSpendBatch(
       const inWindow = rows.filter(
         (r) => r.effective_date >= w.startDate && r.effective_date <= w.endDate,
       )
-      totals.set(w.key, netQualifyingSpend(inWindow))
+      totals.set(w.key, netQualifyingSpend(inWindow, w.annualFee))
     }
   }
   return totals
