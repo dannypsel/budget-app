@@ -111,6 +111,34 @@ def test_cycle_window_none_without_reset_date():
     assert credit_detector.cycle_window(_credit(reset_date=None), TODAY) is None
 
 
+def test_cycle_window_quadrennial_without_reset_date_rolls():
+    # Global Entry-style credits have no reset_date: the benefit is one use
+    # per rolling 4-year period, so the window is [today − 48mo, tomorrow).
+    start, end = credit_detector.cycle_window(
+        _credit(frequency="quadrennial", reset_date=None), TODAY)
+    assert (start.isoformat(), end.isoformat()) == ("2022-09-25", "2026-09-26")
+
+
+def test_quadrennial_credit_detects_without_reset_date():
+    # End-to-end: a GE posting inside the rolling window marks the credit used.
+    sb = _sb(
+        cards=[_card("card-1", "acct-1")],
+        credits=[_credit(
+            "ge-1", "card-1", credit_name="Global Entry",
+            amount=100, frequency="quadrennial", reset_date=None,
+            detect_merchant_keywords=["global entry"], detect_amount=None,
+        )],
+        txns=[_txn("t-ge", account_id="acct-1", amount=-120.00,
+                   merchant_name="AMEX Global Entry or TSA Precheck Credit Reimbursement",
+                   date="2026-03-30")],
+    )
+    stats = credit_detector.detect_credit_usage(sb, USER, today=TODAY)
+    assert stats["detected"] == 1
+    row = sb.table("churn_credits").select("*").eq("id", "ge-1").execute().data[0]
+    assert float(row["used_amount"]) == 100
+    assert row["detection_source"] == "auto"
+
+
 # ── pure helper: matching ───────────────────────────────────────────
 
 def test_matcher_ignores_positive_outflow():

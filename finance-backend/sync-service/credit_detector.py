@@ -67,10 +67,16 @@ def cycle_window(credit, today=None):
     """(start_date, end_date) of the credit's current cycle, or None.
 
     reset_date is the END of the current cycle; the window is
-    [reset_date − delta, reset_date). None when the credit has no reset_date
-    (no cycle to scope the transaction scan to). Pure — no DB access."""
+    [reset_date − delta, reset_date). Quadrennial credits (e.g. Global Entry)
+    have no fixed reset_date — the benefit is one use per rolling 4-year
+    period — so they scan [today − 48 months, tomorrow). None only when a
+    non-quadrennial credit has no reset_date (no cycle to scope to).
+    Pure — no DB access."""
+    today = _to_date(today) or datetime.date.today()
     reset = _to_date(credit.get('reset_date'))
     if reset is None:
+        if (credit.get('frequency') or '').lower() == 'quadrennial':
+            return _add_months(today, -48), today + datetime.timedelta(days=1)
         return None
     return _add_months(reset, -cycle_delta_months(credit)), reset
 
