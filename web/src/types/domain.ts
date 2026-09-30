@@ -561,7 +561,7 @@ export type ChurnBonusInsert = Pick<
 > &
   Partial<Pick<ChurnBonus, 'spend_start_date' | 'bonus_value' | 'status'>>
 
-export type ChurnCreditFrequency = 'annual' | 'semiannual' | 'monthly'
+export type ChurnCreditFrequency = 'annual' | 'semiannual' | 'quarterly' | 'monthly' | 'quadrennial'
 
 /** How a credit got marked used: the backend auto-detector, or the user by hand. */
 export type CreditDetectionSource = 'auto' | 'manual'
@@ -586,7 +586,11 @@ export interface ChurnCredit {
   detect_amount: number | null // expected statement-credit amount; null = any
   detect_tolerance: number // |txn − detect_amount| ≤ tolerance counts as a match
   used_at: string | null // ISO timestamp when the credit was marked used
-  detected_transaction_id: UUID | null // the txn auto-detection matched
+  detected_transaction_id: UUID | null // latest txn auto-detection matched
+  /** Every txn whose posting counted toward used_amount this cycle — the
+   *  detector re-scans these each run so partial usage can accumulate
+   *  without double-counting one posting for two credits. */
+  detected_transaction_ids: UUID[]
   detection_source: CreditDetectionSource | null
   /** Txn ids the user dismissed — auto-detect must never re-mark these. */
   detection_dismissed_transaction_ids: UUID[]

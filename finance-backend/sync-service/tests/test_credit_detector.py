@@ -41,6 +41,7 @@ def _credit(credit_id="credit-1", card_id="card-1", **kw):
            "used_amount": 0, "reset_date": "2026-10-01",
            "period_start_date": "2026-09-01",
            "used_at": None, "detected_transaction_id": None,
+           "detected_transaction_ids": [],
            "detection_source": None,
            "detection_dismissed_transaction_ids": [],
            "remind_days_before": 7}
@@ -97,6 +98,13 @@ def test_cycle_window_month_end_clamp():
     start, _ = credit_detector.cycle_window(
         _credit(reset_date="2027-01-31"), datetime.date(2027, 1, 15))
     assert start == datetime.date(2026, 12, 31)
+
+
+def test_cycle_window_quarterly_and_quadrennial():
+    start, end = credit_detector.cycle_window(
+        _credit(frequency="quarterly", reset_date="2026-10-01"), TODAY)
+    assert (start.isoformat(), end.isoformat()) == ("2026-07-01", "2026-10-01")
+    assert credit_detector.cycle_delta_months(_credit(frequency="quadrennial")) == 48
 
 
 def test_cycle_window_none_without_reset_date():
@@ -181,21 +189,50 @@ def test_rollover_noop_before_reset_date():
 
 # ── end-to-end detection ─────────────────────────────────────────────
 
-def test_detect_marks_credit_used_on_first_match_by_date():
+def test_detect_accumulates_all_matches_capped_at_amount():
     sb = _sb(cards=[_card()],
              credits=[_credit()],
              txns=[_txn("t-late", date="2026-09-20"),
-                   _txn("t-early", date="2026-09-05"),   # wins: earliest date
+                   _txn("t-early", date="2026-09-05"),
                    _txn("t-purchase", date="2026-09-01", amount=20.00)])
     stats = credit_detector.detect_credit_usage(sb, USER, TODAY)
     assert stats["detected"] == 1
     assert stats["credits"] == ["credit-1"]
     credit = sb.one("churn_credits", id="credit-1")
+    # Both -20 postings count, capped at the $20 credit amount.
     assert credit["used_amount"] == 20.00
-    assert credit["detected_transaction_id"] == "t-early"
+    assert credit["detected_transaction_id"] == "t-late"   # latest wins the link
+    assert sorted(credit["detected_transaction_ids"]) == ["t-early", "t-late"]
     assert credit["detection_source"] == "auto"
     assert credit["used_at"] is not None
     assert credit["period_start_date"] == "2026-09-01"
+
+
+def test_detect_partial_usage_accumulates_across_postings():
+    sb = _sb(cards=[_card()],
+             credits=[_credit(detect_amount=None, amount=200.00,
+                             credit_name="Airline", detect_merchant_keywords=["delta"])],
+             txns=[_txn("t-1", date="2026-09-05", amount=-50.00,
+                       merchant_name="DELTA", description="DELTA"),
+                   _txn("t-2", date="2026-09-12", amount=-80.00,
+                       merchant_name="DELTA", description="DELTA")])
+    stats = credit_detector.detect_credit_usage(sb, USER, TODAY)
+    assert stats["detected"] == 1
+    credit = sb.one("churn_credits", id="credit-1")
+    assert credit["used_amount"] == 130.00
+    assert not credit_detector.is_fully_used(credit)
+    # A later posting in the same cycle accumulates; re-runs don't double-count.
+    sb.table("transactions").insert(
+        _txn("t-3", date="2026-09-20", amount=-100.00,
+             merchant_name="DELTA", description="DELTA")).execute()
+    stats2 = credit_detector.detect_credit_usage(sb, USER, TODAY)
+    credit = sb.one("churn_credits", id="credit-1")
+    assert credit["used_amount"] == 200.00          # capped at the credit amount
+    assert credit_detector.is_fully_used(credit)
+    assert stats2["detected"] == 1                  # newly completed this run
+    stats3 = credit_detector.detect_credit_usage(sb, USER, TODAY)
+    assert stats3["detected"] == 0                 # idempotent once fully used
+    assert sb.one("churn_credits", id="credit-1")["used_amount"] == 200.00
 
 
 def test_detect_caps_used_amount_at_credit_amount():

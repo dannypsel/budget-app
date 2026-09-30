@@ -164,6 +164,7 @@ export default function RewardsPage() {
                 {visibleCredits.map((c) => {
                   const remaining = creditRemaining(c)
                   const used = creditIsUsed(c)
+                  const partial = !used && Number(c.used_amount) > 0
                   return (
                     <TableRow key={c.id}>
                       <TableCell className="whitespace-nowrap text-sm font-medium text-foreground">
@@ -188,7 +189,7 @@ export default function RewardsPage() {
                               : 'bg-money-income/15 text-money-income',
                           )}
                         >
-                          {used ? 'Used' : creditUnusedPillText(c)}
+                          {used ? 'Used' : partial ? 'Partially used' : creditUnusedPillText(c)}
                         </span>
                       </TableCell>
                       <TableCell>

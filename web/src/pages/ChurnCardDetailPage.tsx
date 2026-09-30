@@ -40,6 +40,8 @@ import {
   bonusProgress,
   bonusWindow,
   creditDaysLeft,
+  creditFrequencyLabel,
+  CHURN_CREDIT_FREQUENCY_LABELS,
   creditIsUsed,
   creditRemaining,
   creditUnusedPillText,
@@ -437,24 +439,30 @@ export function CreditRow({
   onEdit: () => void
 }) {
   const remaining = creditRemaining(credit)
+  const usedAmount = Number(credit.used_amount) || 0
+  const fullAmount = Number(credit.amount) || 0
   const used = creditIsUsed(credit)
+  const partial = !used && usedAmount > 0
   const daysLeft = creditDaysLeft(credit)
   const updateCredit = useUpdateChurnCredit()
   const deleteCredit = useDeleteChurnCredit()
   const [confirmDelete, setConfirmDelete] = useState(false)
-  // The transaction auto-detection matched (for the "Used · auto" subtext).
+  const [logging, setLogging] = useState(false)
+  const [logAmount, setLogAmount] = useState('')
+  // The latest transaction auto-detection matched (for the subtext link).
   const { data: detectedTxn } = useTransaction(
-    used && credit.detection_source === 'auto' ? credit.detected_transaction_id : null,
+    credit.detection_source === 'auto' ? credit.detected_transaction_id : null,
   )
 
   const keywords = credit.detect_merchant_keywords ?? []
   const autoDetectOn = credit.auto_detect ?? true
+  const manuallyTracked = credit.detection_source === 'manual'
 
-  async function markUsed() {
+  async function markFull() {
     await updateCredit.mutateAsync({
       id: credit.id,
       patch: {
-        used_amount: Number(credit.amount),
+        used_amount: fullAmount,
         detection_source: 'manual',
         used_at: new Date().toISOString(),
       },
@@ -462,11 +470,31 @@ export function CreditRow({
     toast.success(`"${credit.credit_name}" marked used`)
   }
 
-  async function unmark() {
-    // Dismiss the previously-detected transaction so auto-detect won't re-mark it.
+  async function logSpend() {
+    const amt = Math.round(Number(logAmount) * 100) / 100
+    if (!Number.isFinite(amt) || amt <= 0) {
+      toast.error('Enter an amount greater than $0')
+      return
+    }
+    const next = Math.min(Math.round((usedAmount + amt) * 100) / 100, fullAmount)
+    await updateCredit.mutateAsync({
+      id: credit.id,
+      patch: {
+        used_amount: next,
+        detection_source: 'manual',
+        used_at: new Date().toISOString(),
+      },
+    })
+    setLogging(false)
+    setLogAmount('')
+    toast.success(`Logged ${formatCurrency(amt)} toward "${credit.credit_name}"`)
+  }
+
+  async function resetUsage() {
+    // Dismiss every contributing transaction so auto-detect won't re-mark them.
     const dismissed = [...(credit.detection_dismissed_transaction_ids ?? [])]
-    if (credit.detected_transaction_id && !dismissed.includes(credit.detected_transaction_id)) {
-      dismissed.push(credit.detected_transaction_id)
+    for (const id of [...(credit.detected_transaction_ids ?? []), credit.detected_transaction_id]) {
+      if (id && !dismissed.includes(id)) dismissed.push(id)
     }
     await updateCredit.mutateAsync({
       id: credit.id,
@@ -474,25 +502,30 @@ export function CreditRow({
         used_amount: 0,
         used_at: null,
         detected_transaction_id: null,
+        detected_transaction_ids: [],
         detection_source: null,
         detection_dismissed_transaction_ids: dismissed,
       },
     })
-    toast.success(`"${credit.credit_name}" marked unused`)
+    toast.success(`"${credit.credit_name}" reset — auto-detect resumed`)
   }
 
   const pillClass = used
     ? credit.detection_source === 'auto'
       ? 'bg-income/10 text-income'
       : 'bg-secondary-container text-on-secondary-container'
-    : daysLeft != null && daysLeft <= 14
-      ? 'bg-destructive/10 text-destructive'
-      : 'bg-surface-container-high text-muted-foreground'
+    : partial
+      ? 'bg-primary/10 text-primary'
+      : daysLeft != null && daysLeft <= 14
+        ? 'bg-destructive/10 text-destructive'
+        : 'bg-surface-container-high text-muted-foreground'
   const pillText = used
     ? credit.detection_source === 'auto'
       ? 'Used · auto'
       : 'Used · manual'
-    : creditUnusedPillText(credit)
+    : partial
+      ? 'Partially used'
+      : creditUnusedPillText(credit)
 
   return (
     <li className="rounded-xl border border-border p-4">
@@ -500,7 +533,7 @@ export function CreditRow({
         <div className="min-w-0">
           <p className="truncate text-base font-semibold text-foreground">{credit.credit_name}</p>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            {credit.frequency}
+            {creditFrequencyLabel(credit.frequency)}
             {credit.reset_date ? ` · resets ${formatShortDate(credit.reset_date)}` : ''}
           </p>
         </div>
@@ -509,12 +542,12 @@ export function CreditRow({
             {pillText}
           </span>
           <p className="text-xs text-muted-foreground tabular-nums">
-            {formatCurrency(remaining)} left of {formatCurrency(Number(credit.amount))}
+            Spent {formatCurrency(usedAmount)} of {formatCurrency(fullAmount)}
           </p>
         </div>
       </div>
 
-      {used && credit.detection_source === 'auto' && (
+      {credit.detection_source === 'auto' && credit.detected_transaction_id && (
         <p className="mt-2 text-xs text-muted-foreground">
           {detectedTxn
             ? `${displayName(detectedTxn)} · ${formatCurrency(Math.abs(Number(detectedTxn.amount)))} · ${formatShortDate(detectedTxn.date)}`
@@ -534,7 +567,9 @@ export function CreditRow({
       )}
 
       <p className="mt-2 text-xs text-muted-foreground">
-        {autoDetectOn && keywords.length > 0 ? (
+        {manuallyTracked ? (
+          'Manual tracking · auto-detect paused (Reset to resume)'
+        ) : autoDetectOn && keywords.length > 0 ? (
           <>
             Auto-detect: {keywords.join(', ')}
             {credit.detect_amount != null &&
@@ -554,14 +589,49 @@ export function CreditRow({
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        {used ? (
-          <Button variant="outline" size="sm" onClick={() => void unmark()} disabled={updateCredit.isPending}>
-            Unmark
+        {!used && (
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setLogging((v) => !v)
+                setLogAmount('')
+              }}
+              disabled={updateCredit.isPending}
+            >
+              Log spend
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => void markFull()} disabled={updateCredit.isPending}>
+              Mark full
+            </Button>
+          </>
+        )}
+        {usedAmount > 0 && (
+          <Button variant="outline" size="sm" onClick={() => void resetUsage()} disabled={updateCredit.isPending}>
+            Reset
           </Button>
-        ) : (
-          <Button variant="outline" size="sm" onClick={() => void markUsed()} disabled={updateCredit.isPending}>
-            Mark used
-          </Button>
+        )}
+        {logging && !used && (
+          <div className="flex items-center gap-2">
+            <Input
+              type="number"
+              min="0"
+              step="0.01"
+              inputMode="decimal"
+              aria-label={`Amount spent toward ${credit.credit_name}`}
+              placeholder="0.00"
+              value={logAmount}
+              onChange={(e) => setLogAmount(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void logSpend()
+              }}
+              className="h-8 w-28"
+            />
+            <Button size="sm" onClick={() => void logSpend()} disabled={updateCredit.isPending}>
+              Add
+            </Button>
+          </div>
         )}
         <div className="ml-auto flex gap-1">
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onEdit} aria-label={`Edit ${credit.credit_name}`}>
@@ -717,7 +787,9 @@ function BonusDialog({
 
 // ─── Credit dialog ──────────────────────────────────────────────────────────
 
-const FREQUENCIES: ChurnCreditFrequency[] = ['annual', 'semiannual', 'monthly']
+const FREQUENCIES: { value: ChurnCreditFrequency; label: string }[] = (
+  Object.keys(CHURN_CREDIT_FREQUENCY_LABELS) as ChurnCreditFrequency[]
+).map((value) => ({ value, label: creditFrequencyLabel(value) }))
 
 /** Exported for tests. */
 export function CreditDialog({
@@ -835,8 +907,8 @@ export function CreditDialog({
               className="h-10 w-full rounded-md border border-border bg-card px-3 text-sm text-foreground focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
             >
               {FREQUENCIES.map((f) => (
-                <option key={f} value={f}>
-                  {f.charAt(0).toUpperCase() + f.slice(1)}
+                <option key={f.value} value={f.value}>
+                  {f.label}
                 </option>
               ))}
             </select>

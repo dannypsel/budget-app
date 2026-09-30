@@ -131,6 +131,7 @@ describe('creditRemaining', () => {
     detect_tolerance: 0.01,
     used_at: null,
     detected_transaction_id: null,
+    detected_transaction_ids: [],
     detection_source: null,
     detection_dismissed_transaction_ids: [],
     remind_days_before: 7,
@@ -150,9 +151,10 @@ describe('creditRemaining', () => {
     it('is true when used_amount covers the full amount', () => {
       expect(creditIsUsed(credit({ used_amount: 300 }))).toBe(true)
     })
-    it('is true when explicitly marked (auto or manual), even partially used', () => {
-      expect(creditIsUsed(credit({ detection_source: 'auto', used_amount: 20 }))).toBe(true)
-      expect(creditIsUsed(credit({ detection_source: 'manual', used_amount: 0 }))).toBe(true)
+    it('is false for partially-used credits — dollars, not marks, decide', () => {
+      expect(creditIsUsed(credit({ detection_source: 'auto', used_amount: 20 }))).toBe(false)
+      expect(creditIsUsed(credit({ detection_source: 'manual', used_amount: 0 }))).toBe(false)
+      expect(creditIsUsed(credit({ detection_source: 'manual', used_amount: 299.99 }))).toBe(false)
     })
   })
 
@@ -195,7 +197,7 @@ describe('creditRemaining', () => {
       expect(creditNeedsAttention(credit({ reset_date: '2026-09-20' }), today)).toBe(true)
       expect(
         creditNeedsAttention(
-          credit({ reset_date: '2026-09-26', detection_source: 'manual' }),
+          credit({ reset_date: '2026-09-26', used_amount: 300 }),
           today,
         ),
       ).toBe(false)
@@ -233,7 +235,7 @@ describe('creditRemaining', () => {
     })
     it('drops used, past-reset, and dateless credits', () => {
       const credits = [
-        credit({ id: 'u1', card_id: 'c1', credit_name: 'Used', reset_date: '2026-10-05', detection_source: 'auto' }),
+        credit({ id: 'u1', card_id: 'c1', credit_name: 'Used', reset_date: '2026-10-05', used_amount: 300, detection_source: 'auto' }),
         credit({ id: 'u2', card_id: 'c1', credit_name: 'Full', reset_date: '2026-10-05', used_amount: 300 }),
         credit({ id: 'u3', card_id: 'c1', credit_name: 'Past', reset_date: '2026-09-01' }),
         credit({ id: 'u4', card_id: 'c1', credit_name: 'NoDate', reset_date: null }),

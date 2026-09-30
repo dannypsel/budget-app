@@ -22,6 +22,7 @@ const base = {
   detect_tolerance: 0.01,
   used_at: null,
   detected_transaction_id: null,
+  detected_transaction_ids: [],
   detection_source: null,
   detection_dismissed_transaction_ids: [],
   remind_days_before: 7,

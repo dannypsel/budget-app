@@ -123,18 +123,29 @@ export function buildChurnDeadlines(
   return out.sort((a, b) => a.date.localeCompare(b.date))
 }
 
+/** Human labels for credit frequencies (also used by the credit dialog). */
+export const CHURN_CREDIT_FREQUENCY_LABELS: Record<ChurnCreditFrequency, string> = {
+  annual: 'Annual',
+  semiannual: 'Twice a year',
+  quarterly: 'Quarterly',
+  monthly: 'Monthly',
+  quadrennial: 'Every 4 years',
+}
+
+export function creditFrequencyLabel(f: ChurnCreditFrequency): string {
+  return CHURN_CREDIT_FREQUENCY_LABELS[f] ?? f
+}
+
 /** Remaining credit value this period. */
 export function creditRemaining(credit: ChurnCredit): number {
   return Math.max(0, Number(credit.amount) - Number(credit.used_amount))
 }
 
-/** True when the credit counts as used this period — either the used amount
- *  covers the full value, or it was explicitly marked (auto or manual). */
+/** True when the credit's full value is spent this period. Dollars are the
+ *  source of truth — a partially-used credit (used_amount < amount) still
+ *  needs spend, regardless of how it was marked. */
 export function creditIsUsed(credit: ChurnCredit): boolean {
-  return (
-    credit.detection_source != null ||
-    Number(credit.used_amount) >= Number(credit.amount)
-  )
+  return Number(credit.used_amount) >= Number(credit.amount)
 }
 
 /** Whole days from `today` until the credit's reset_date. Null when the credit

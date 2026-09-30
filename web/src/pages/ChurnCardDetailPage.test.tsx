@@ -64,6 +64,7 @@ const credit = (over: Partial<ChurnCredit> = {}): ChurnCredit => ({
   detect_tolerance: 0.01,
   used_at: null,
   detected_transaction_id: null,
+  detected_transaction_ids: [],
   detection_source: null,
   detection_dismissed_transaction_ids: [],
   remind_days_before: 7,
@@ -243,10 +244,10 @@ describe('<CreditRow> status pill', () => {
     expect(screen.getByText('Auto-detect off')).toBeInTheDocument()
   })
 
-  it('"Mark used" marks the credit manual with used_at', async () => {
+  it('"Mark full" marks the whole credit manual with used_at', async () => {
     const user = userEvent.setup()
     renderRow(credit())
-    await user.click(screen.getByRole('button', { name: 'Mark used' }))
+    await user.click(screen.getByRole('button', { name: 'Mark full' }))
     expect(mocks.updateCreditMutate).toHaveBeenCalledWith({
       id: 'cr-1',
       patch: {
@@ -257,25 +258,57 @@ describe('<CreditRow> status pill', () => {
     })
   })
 
-  it('"Unmark" clears usage and dismisses the detected transaction', async () => {
+  it('"Log spend" adds a partial amount and pauses auto-detect', async () => {
+    const user = userEvent.setup()
+    renderRow(credit({ used_amount: 8 }))
+    expect(screen.getByText('Spent $8.00 of $20.00')).toBeInTheDocument()
+    expect(screen.getByText('Partially used')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Log spend' }))
+    await user.type(screen.getByLabelText('Amount spent toward Dining'), '5.50')
+    await user.click(screen.getByRole('button', { name: 'Add' }))
+    expect(mocks.updateCreditMutate).toHaveBeenCalledWith({
+      id: 'cr-1',
+      patch: {
+        used_amount: 13.5,
+        detection_source: 'manual',
+        used_at: expect.any(String),
+      },
+    })
+  })
+
+  it('"Log spend" caps the total at the credit amount', async () => {
+    const user = userEvent.setup()
+    renderRow(credit({ used_amount: 18 }))
+    await user.click(screen.getByRole('button', { name: 'Log spend' }))
+    await user.type(screen.getByLabelText('Amount spent toward Dining'), '10')
+    await user.click(screen.getByRole('button', { name: 'Add' }))
+    expect(mocks.updateCreditMutate).toHaveBeenCalledWith({
+      id: 'cr-1',
+      patch: expect.objectContaining({ used_amount: 20 }),
+    })
+  })
+
+  it('"Reset" clears usage and dismisses every contributing transaction', async () => {
     const user = userEvent.setup()
     renderRow(
       credit({
         detection_source: 'auto',
         detected_transaction_id: 'txn-1',
+        detected_transaction_ids: ['txn-1', 'txn-2'],
         used_amount: 20,
         detection_dismissed_transaction_ids: ['txn-0'],
       }),
     )
-    await user.click(screen.getByRole('button', { name: 'Unmark' }))
+    await user.click(screen.getByRole('button', { name: 'Reset' }))
     expect(mocks.updateCreditMutate).toHaveBeenCalledWith({
       id: 'cr-1',
       patch: {
         used_amount: 0,
         used_at: null,
         detected_transaction_id: null,
+        detected_transaction_ids: [],
         detection_source: null,
-        detection_dismissed_transaction_ids: ['txn-0', 'txn-1'],
+        detection_dismissed_transaction_ids: ['txn-0', 'txn-1', 'txn-2'],
       },
     })
   })
