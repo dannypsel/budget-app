@@ -11,6 +11,35 @@ import { hasSplits, merchantKey } from '@/types/domain'
 const SELECT =
   '*, categories(*), transaction_tags(tag_id, tags(*)), transaction_splits(*, categories(*))'
 
+/** PostgREST caps a single response at 1000 rows — without paging, any query over
+ *  that silently drops the oldest rows (this hid the entire Simplifi history
+ *  import from Reports until it was fixed). `buildPage` must construct a FRESH
+ *  query on every call with identical filters and a stable order (newest
+ *  effective_date, id as tiebreaker) so pages can't skip or repeat rows. */
+const PAGE_SIZE = 1000
+
+function fetchAllPages(
+  buildPage: (
+    from: number,
+    to: number,
+  ) => PromiseLike<{ data: unknown[] | null; error: { message: string } | null }>,
+): Promise<unknown[]> {
+  return (async () => {
+    const out: unknown[] = []
+    let from = 0
+    for (;;) {
+      const { data, error } = await buildPage(from, from + PAGE_SIZE - 1)
+      if (error) throw error
+      const rows = data ?? []
+      out.push(...rows)
+      if (rows.length < PAGE_SIZE) break
+      from += PAGE_SIZE
+    }
+    return out
+  })()
+}
+
+
 /** Transactions in the month containing `month`, filtered+ordered by effective_date
  *  (= authorized_date ?? date) so day-grouping matches. Excludes exclude_from_totals
  *  by default; pass `includeExcluded` to keep excluded/transfer rows (the Transactions
@@ -20,15 +49,18 @@ export async function fetchTransactions(
   opts: { includeExcluded?: boolean } = {},
 ): Promise<Transaction[]> {
   const { start, end } = monthBounds(month)
-  let q = supabase
-    .from('transactions')
-    .select(SELECT)
-    .gte('effective_date', start)
-    .lte('effective_date', end)
-  if (!opts.includeExcluded) q = q.eq('exclude_from_totals', false)
-  const { data, error } = await q.order('effective_date', { ascending: false })
-  if (error) throw error
-  return (data ?? []) as unknown as Transaction[]
+  const includeExcluded = opts.includeExcluded ?? false
+  const rows = await fetchAllPages((from, to) => {
+    let q = supabase
+      .from('transactions')
+      .select(SELECT)
+      .gte('effective_date', start)
+      .lte('effective_date', end)
+    if (!includeExcluded) q = q.eq('exclude_from_totals', false)
+    // id breaks effective_date ties so pages can't skip or repeat rows
+    return q.order('effective_date', { ascending: false }).order('id').range(from, to)
+  })
+  return rows as unknown as Transaction[]
 }
 
 /** Transactions in an arbitrary [startISO, endISO] range (inclusive), filtered+ordered
@@ -40,15 +72,18 @@ export async function fetchTransactionsRange(
   endISO: string,
   opts: { includeExcluded?: boolean } = {},
 ): Promise<Transaction[]> {
-  let q = supabase
-    .from('transactions')
-    .select(SELECT)
-    .gte('effective_date', startISO)
-    .lte('effective_date', endISO)
-  if (!opts.includeExcluded) q = q.eq('exclude_from_totals', false)
-  const { data, error } = await q.order('effective_date', { ascending: false })
-  if (error) throw error
-  return (data ?? []) as unknown as Transaction[]
+  const includeExcluded = opts.includeExcluded ?? false
+  const rows = await fetchAllPages((from, to) => {
+    let q = supabase
+      .from('transactions')
+      .select(SELECT)
+      .gte('effective_date', startISO)
+      .lte('effective_date', endISO)
+    if (!includeExcluded) q = q.eq('exclude_from_totals', false)
+    // id breaks effective_date ties so pages can't skip or repeat rows
+    return q.order('effective_date', { ascending: false }).order('id').range(from, to)
+  })
+  return rows as unknown as Transaction[]
 }
 
 /** Transactions in the last `days` days (Home recent list). */
@@ -56,13 +91,16 @@ export async function fetchRecent(days: number): Promise<Transaction[]> {
   const cutoff = new Date()
   cutoff.setDate(cutoff.getDate() - days)
   const iso = cutoff.toISOString().slice(0, 10)
-  const { data, error } = await supabase
-    .from('transactions')
-    .select(SELECT)
-    .gte('effective_date', iso)
-    .order('effective_date', { ascending: false })
-  if (error) throw error
-  return (data ?? []) as unknown as Transaction[]
+  const rows = await fetchAllPages((from, to) =>
+    supabase
+      .from('transactions')
+      .select(SELECT)
+      .gte('effective_date', iso)
+      .order('effective_date', { ascending: false })
+      .order('id')
+      .range(from, to),
+  )
+  return rows as unknown as Transaction[]
 }
 
 /** Max rows the search RPC returns in one call. The client applies category/tag
@@ -95,41 +133,45 @@ export async function searchTransactions(query: string): Promise<Transaction[]> 
 /** All transactions for a single account, newest first. Includes transfers/excluded rows
  *  so the account ledger is complete (mirrors iOS AccountDetailView). */
 export async function fetchTransactionsByAccount(accountId: UUID): Promise<Transaction[]> {
-  const { data, error } = await supabase
-    .from('transactions')
-    .select(SELECT)
-    .eq('account_id', accountId)
-    .order('effective_date', { ascending: false })
-  if (error) throw error
-  return (data ?? []) as unknown as Transaction[]
+  const rows = await fetchAllPages((from, to) =>
+    supabase
+      .from('transactions')
+      .select(SELECT)
+      .eq('account_id', accountId)
+      .order('effective_date', { ascending: false })
+      .order('id')
+      .range(from, to),
+  )
+  return rows as unknown as Transaction[]
 }
 
 /** Pass `month` to scope the queue to that calendar month (the banner + review flow the
  *  user browses month-by-month); omit it for the all-months set the bulk flows need
  *  (uncategorizedSameMerchant, autoCategorizeUncategorized). */
 export async function fetchUncategorized(month?: Date): Promise<Transaction[]> {
-  let q = supabase
-    .from('transactions')
-    .select(SELECT)
-    .is('category_id', null)
-    .eq('pending', false)
-    .eq('hidden', false) // hidden txns shouldn't nag in the categorize queue
-    .eq('exclude_from_totals', false) // nor should transfer legs — they're moved money
-    // Uncategorized reimbursements DO belong here: a card refund auto-flagged at sync
-    // (categorizer._is_card_refund) has is_reimbursement=true but no category yet, and it
-    // only nets its category once the user buckets it. Categorized reimbursements carry a
-    // category_id and are already excluded by the `.is('category_id', null)` filter above.
-  if (month) {
-    const { start, end } = monthBounds(month)
-    q = q.gte('effective_date', start).lte('effective_date', end)
-  }
-  const { data, error } = await q.order('effective_date', { ascending: false })
-  if (error) throw error
+  const bounds = month ? monthBounds(month) : null
+  const rows = await fetchAllPages((from, to) => {
+    let q = supabase
+      .from('transactions')
+      .select(SELECT)
+      .is('category_id', null)
+      .eq('pending', false)
+      .eq('hidden', false) // hidden txns shouldn't nag in the categorize queue
+      .eq('exclude_from_totals', false) // nor should transfer legs — they're moved money
+      // Uncategorized reimbursements DO belong here: a card refund auto-flagged at sync
+      // (categorizer._is_card_refund) has is_reimbursement=true but no category yet, and it
+      // only nets its category once the user buckets it. Categorized reimbursements carry a
+      // category_id and are already excluded by the `.is('category_id', null)` filter above.
+    if (bounds) q = q.gte('effective_date', bounds.start).lte('effective_date', bounds.end)
+    // id breaks effective_date ties so pages can't skip or repeat rows
+    return q.order('effective_date', { ascending: false }).order('id').range(from, to)
+  })
+  const txns = rows as unknown as Transaction[]
   // A split txn has a null category_id but is categorized via its splits — confirming it here
   // would re-learn merchant memory from a non-spend parent. PostgREST can't cheaply test the
   // embed's absence in this select, so drop split parents client-side (mirrors iOS
   // `isUncategorizedQueueEligible`, which filters `hasSplits`).
-  return ((data ?? []) as unknown as Transaction[]).filter((t) => !hasSplits(t))
+  return txns.filter((t) => !hasSplits(t))
 }
 
 /** exclude_from_totals after a hidden change: hidden always excludes; unhiding
@@ -272,12 +314,15 @@ export async function forgetMerchant(key: string): Promise<void> {
 }
 
 export async function fetchMerchantMemory(): Promise<Record<string, UUID>> {
-  const { data, error } = await supabase
-    .from('merchant_categories')
-    .select('merchant_key, category_id')
-  if (error) throw error
+  const rows = await fetchAllPages((from, to) =>
+    supabase
+      .from('merchant_categories')
+      .select('merchant_key, category_id')
+      .order('merchant_key')
+      .range(from, to),
+  )
   const out: Record<string, UUID> = {}
-  for (const row of (data ?? []) as { merchant_key: string; category_id: UUID }[]) {
+  for (const row of rows as { merchant_key: string; category_id: UUID }[]) {
     if (out[row.merchant_key] == null) out[row.merchant_key] = row.category_id
   }
   return out

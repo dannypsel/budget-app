@@ -44,7 +44,8 @@ vi.mock('@/lib/supabase', () => {
     eq: () => txns,
     gte: record('gte'),
     lte: record('lte'),
-    order: () => Promise.resolve({ data: queryRows, error: null }),
+    order: () => txns,
+    range: () => Promise.resolve({ data: queryRows, error: null }),
     update: (patch: { category_id?: unknown; is_reimbursement?: unknown }) => ({
       in: (_col: string, ids: string[]) => {
         updateCalls.push({
@@ -56,8 +57,10 @@ vi.mock('@/lib/supabase', () => {
       },
     }),
   }
-  const merchantCategories = {
-    select: () => Promise.resolve({ data: memoryRows, error: null }),
+  const merchantCategories: Record<string, unknown> = {
+    select: () => merchantCategories,
+    order: () => merchantCategories,
+    range: () => Promise.resolve({ data: memoryRows, error: null }),
   }
   return {
     supabase: {
