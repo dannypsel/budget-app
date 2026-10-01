@@ -227,6 +227,14 @@ def apply_learned(transactions: list[dict], ctx: dict, acct_types: dict = None) 
                     and (txn.get('plaid_category') or '') not in PFC_TRANSFER \
                     and not card_refund:
                 txn['category_id'] = income_id
+            # Guard: an outflow (amount > 0) can never be Income. Merchant
+            # memory learned from a money-in transaction (or a sloppy keyword
+            # rule) would otherwise stamp Income on later outflows from the
+            # same merchant — seen 2026-09 with Tithe.ly, StubHub and bank
+            # transfers. Leave it uncategorized so it surfaces for review.
+            if income_id and txn.get('category_id') == income_id \
+                    and (txn.get('amount') or 0) > 0:
+                txn['category_id'] = None
 
         # Reimbursement is an orthogonal action: flag the credit so it nets its
         # category's spend down instead of counting as income. `is_reimbursement`

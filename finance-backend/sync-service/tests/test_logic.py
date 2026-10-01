@@ -265,6 +265,30 @@ def test_categorization_logic():
     assert _merchant_key({"description": "PAYPAL *X"}) == "paypal *x", "falls back to description"
 
 
+def test_income_guard_on_outflows():
+    """An outflow (amount > 0) can never be labeled Income — not via merchant
+    memory learned from a money-in transaction, not via a keyword rule.
+    Regression: 2026-09 Tithe.ly / StubHub / bank transfers got Income."""
+    ctx = {
+        "memory": {"tithe.ly": "cat-income"},  # learned from a Tithe.ly refund (money in)
+        "rules": [
+            {"keyword": "stubhub", "category_id": "cat-income"},
+        ],
+        "income_id": "cat-income",
+    }
+    txns = [
+        {"merchant_name": "Tithe.ly", "description": "", "amount": 2163.03},
+        {"merchant_name": "StubHub", "description": "", "amount": 1833.37},
+        {"merchant_name": "Acme Payroll", "description": "", "amount": -2650.0},
+    ]
+
+    apply_learned(txns, ctx)
+
+    assert txns[0].get("category_id") is None, "memory must not stamp Income on an outflow"
+    assert txns[1].get("category_id") is None, "rule must not stamp Income on an outflow"
+    assert txns[2]["category_id"] == "cat-income", "money-in still maps to Income"
+
+
 def test_conditional_rules_on_import():
     """Conditional rules: a rule can additionally gate on money direction
     and amount magnitude, and can flag the row as a reimbursement. The motivating

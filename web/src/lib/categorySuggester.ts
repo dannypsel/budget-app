@@ -84,6 +84,26 @@ export function autoMatch(
   rules: CategoryRule[],
   categories: Category[],
 ): UUID | null {
+  const id = autoMatchInner(txn, memory, rules, categories)
+  // Guard: an outflow can never be Income. Merchant memory learned from a
+  // money-in transaction (or a sloppy keyword rule) would otherwise stamp
+  // Income on later outflows from the same merchant — seen 2026-09 with
+  // Tithe.ly, StubHub and bank transfers. (Diverges from the iOS port on
+  // purpose; port the guard there too.)
+  if (id != null && txn.amount > 0 && categories.find((c) => c.id === id)?.name === 'Income')
+    return null
+  return id
+}
+
+/** Inner precedence ladder for autoMatch (memory -> rule -> income-by-sign ->
+ *  Plaid PFC maps). Kept separate so the Income guard above applies to every
+ *  source uniformly. */
+function autoMatchInner(
+  txn: Transaction,
+  memory: Record<string, UUID>,
+  rules: CategoryRule[],
+  categories: Category[],
+): UUID | null {
   const key = merchantKey(txn)
   if (key && memory[key]) return memory[key]
 

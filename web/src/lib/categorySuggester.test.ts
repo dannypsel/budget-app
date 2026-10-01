@@ -73,6 +73,27 @@ describe('autoMatch precedence', () => {
   })
 })
 
+describe('autoMatch Income guard', () => {
+  it('never returns Income for an outflow, even when merchant memory says Income', () => {
+    // memory learned Income from a Tithe.ly refund (money in); the later
+    // $2,163.03 outflow must not inherit it (regression 2026-09)
+    const t = txn({ merchant_name: 'Tithe.ly', amount: 2163.03 })
+    const memory = { 'tithe.ly': cat('Income') }
+    expect(autoMatch(t, memory, [], categories)).toBeNull()
+  })
+
+  it('never returns Income for an outflow matched by a keyword rule', () => {
+    const t = txn({ merchant_name: 'Stubhub', amount: 1833.37 })
+    const rules = [makeRule({ id: '1', keyword: 'stubhub', category_id: cat('Income') })]
+    expect(autoMatch(t, {}, rules, categories)).toBeNull()
+  })
+
+  it('still returns Income for money-in', () => {
+    const t = txn({ merchant_name: 'Acme Payroll', amount: -2650 })
+    expect(autoMatch(t, {}, [], categories)).toBe(cat('Income'))
+  })
+})
+
 describe('suggest', () => {
   it('falls back to Other when no confident guess', () => {
     const t = txn({ merchant_name: 'Mystery', amount: 20 })
