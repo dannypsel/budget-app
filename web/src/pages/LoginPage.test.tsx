@@ -5,12 +5,14 @@ import LoginPage from './LoginPage'
 
 const signIn = vi.fn().mockResolvedValue(undefined)
 const signUp = vi.fn().mockResolvedValue({ needsConfirmation: false })
+const signInWithGoogle = vi.fn().mockResolvedValue(undefined)
 const resetPassword = vi.fn().mockResolvedValue(undefined)
 
 vi.mock('@/lib/auth', () => ({
   useAuth: () => ({
     signIn,
     signUp,
+    signInWithGoogle,
     resetPassword,
     signOut: vi.fn(),
     session: null,
@@ -22,6 +24,7 @@ vi.mock('@/lib/auth', () => ({
 beforeEach(() => {
   signIn.mockClear()
   signUp.mockClear()
+  signInWithGoogle.mockClear()
   resetPassword.mockClear()
 })
 
@@ -94,5 +97,17 @@ describe('<LoginPage>', () => {
     await userEvent.click(submit)
     expect(resetPassword).toHaveBeenCalledWith('lockedout@pocketlens.app')
     expect(await screen.findByText(/reset link is on its way/i)).toBeInTheDocument()
+  })
+
+  it('calls signInWithGoogle from the Google button', async () => {
+    render(<LoginPage />)
+    await userEvent.click(screen.getByRole('button', { name: /continue with google/i }))
+    expect(signInWithGoogle).toHaveBeenCalled()
+  })
+
+  it('hides the Google button in forgot-password mode', async () => {
+    render(<LoginPage />)
+    await userEvent.click(screen.getByRole('button', { name: /forgot password/i }))
+    expect(screen.queryByRole('button', { name: /continue with google/i })).not.toBeInTheDocument()
   })
 })

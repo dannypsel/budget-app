@@ -26,6 +26,9 @@ interface AuthContextValue {
     profile: { firstName: string; lastName: string },
   ) => Promise<{ needsConfirmation: boolean }>
   signOut: () => Promise<void>
+  // Google OAuth sign-in. On success the browser redirects to Google and back;
+  // the redirect never returns here (same pattern as the travel app).
+  signInWithGoogle: () => Promise<void>
   // Send a password-recovery email. The link returns to /reset-password.
   resetPassword: (email: string) => Promise<void>
   // Set a new password for the recovery session, then leave the recovery flow.
@@ -106,6 +109,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await supabase.auth.signOut()
   }
 
+  async function signInWithGoogle() {
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: window.location.origin },
+    })
+    // On success the browser redirects to Google; we never get here.
+    if (error) throw error
+  }
+
   async function resetPassword(email: string) {
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
       redirectTo: `${window.location.origin}/reset-password`,
@@ -130,6 +142,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         signIn,
         signUp,
         signOut,
+        signInWithGoogle,
         resetPassword,
         updatePassword,
       }}

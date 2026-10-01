@@ -23,7 +23,8 @@ export const supabase = createClient(url, publishableKey, {
     // Implicit flow puts the token in the URL hash, so a recovery link works even when
     // opened in a different browser than the one that requested it (email on phone,
     // app on desktop). PKCE would tie recovery to the requesting browser's stored
-    // code_verifier. App is email/password only — no OAuth — so implicit is fine.
+    // code_verifier. Google OAuth also lands its token in the hash, and
+    // detectSessionInUrl picks up the same-browser redirect — so implicit stays fine.
     flowType: 'implicit',
   },
 })

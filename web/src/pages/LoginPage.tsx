@@ -16,7 +16,7 @@ export default function LoginPage({
   /** The demo's "Sign up" entry points land here with the sign-up tab already open. */
   initialMode?: 'signin' | 'signup'
 }) {
-  const { signIn, signUp, resetPassword } = useAuth()
+  const { signIn, signUp, signInWithGoogle, resetPassword } = useAuth()
   const [mode, setMode] = useState<'signin' | 'signup' | 'forgot'>(initialMode)
   const [firstName, setFirstName] = useState('')
   const [lastName, setLastName] = useState('')
@@ -25,6 +25,7 @@ export default function LoginPage({
   const [confirmPassword, setConfirmPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [googleBusy, setGoogleBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
@@ -41,6 +42,19 @@ export default function LoginPage({
     namesFilled &&
     passwordsMatch &&
     !busy
+
+  async function google() {
+    setGoogleBusy(true)
+    setError(null)
+    setNotice(null)
+    try {
+      await signInWithGoogle()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Something went wrong')
+    } finally {
+      setGoogleBusy(false)
+    }
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
@@ -118,7 +132,25 @@ export default function LoginPage({
             </Tabs>
           )}
 
-          <form onSubmit={submit} className="mt-6 space-y-4">
+          {mode !== 'forgot' && (
+            <div className="mt-6">
+              <button
+                type="button"
+                onClick={() => void google()}
+                disabled={googleBusy || busy}
+                className="w-full rounded-lg border border-border bg-card py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
+              >
+                {googleBusy ? 'Redirecting to Google…' : 'Continue with Google'}
+              </button>
+              <div className="my-4 flex items-center gap-3 text-xs text-muted-foreground">
+                <span className="h-px flex-1 bg-border" />
+                or
+                <span className="h-px flex-1 bg-border" />
+              </div>
+            </div>
+          )}
+
+          <form onSubmit={submit} className={`${mode === 'forgot' ? 'mt-6 ' : ''}space-y-4`}>
             {mode === 'signup' && (
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
