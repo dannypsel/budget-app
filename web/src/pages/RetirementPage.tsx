@@ -5,9 +5,12 @@
 
 import { useMemo, useRef, useState } from 'react'
 import {
+  Area,
   Bar,
   BarChart,
   CartesianGrid,
+  ComposedChart,
+  Line,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -35,11 +38,15 @@ import {
 } from '@/data/hooks'
 import {
   availableToSavePerYear,
+  bucketTotalsForYear,
   defaultRetirementInputs,
   extraMonthlySavingsToCloseGap,
   newRetirementAccount,
   newRetirementRowId,
   projectRetirement,
+  projectRetirementBands,
+  RETIREMENT_BUCKETS,
+  RETIREMENT_BUCKET_COLORS,
   type RetirementProjection,
   type RetirementYear,
 } from '@/lib/retirement'
@@ -58,20 +65,11 @@ import type {
   RetirementTaxTreatment,
 } from '@/types/domain'
 
-const PALETTE = [
-  '#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#06b6d4',
-  '#f97316', '#6366f1', '#84cc16', '#eab308', '#14b8a6', '#a855f7',
-]
-
 const TAX_TREATMENTS: Array<{ value: RetirementTaxTreatment; label: string }> = [
   { value: 'taxable', label: 'Taxable / cash' },
   { value: 'traditional', label: 'Traditional (pre-tax)' },
   { value: 'roth', label: 'Roth (tax-free)' },
 ]
-
-function colorFor(index: number): string {
-  return PALETTE[index % PALETTE.length]
-}
 
 export default function RetirementPage() {
   const [inputs, setInputs] = useState<RetirementInputs>(() => defaultRetirementInputs())
@@ -448,7 +446,11 @@ export default function RetirementPage() {
             </h2>
             <p className="mt-1 text-sm text-muted-foreground">
               Ending balance {formatCurrency(lastYear(projection).totalEnd)} nominal ·{' '}
-              {formatCurrency(lastYear(projection).totalEndToday)} in today's dollars.
+              {formatCurrency(lastYear(projection).totalEndToday)} in today's dollars ·{' '}
+              <strong className="text-foreground">
+                {formatCurrency(lastYear(projection).afterTaxTotalEndToday)} after tax
+              </strong>{' '}
+              in today's dollars.
             </p>
           </div>
         )}
@@ -465,7 +467,7 @@ export default function RetirementPage() {
 
       {/* Hero chart */}
       <section className="card-surface p-4 md:p-6">
-        <h2 className="eyebrow mb-4">Projected balance by account — click a year for detail</h2>
+        <h2 className="eyebrow mb-4">Projected balance by bucket — click a year for detail</h2>
         <ProjectionChart
           projection={projection}
           accounts={inputs.accounts}
@@ -473,6 +475,9 @@ export default function RetirementPage() {
           onSelectYear={setSelectedYear}
         />
       </section>
+
+      {/* Outcome band */}
+      <OutcomeRange inputs={inputs} />
 
       {/* Year detail */}
       {selected && <YearDetail year={selected} />}
@@ -643,14 +648,16 @@ function NumField({
   )
 }
 
-/** Stacked annual bars per account bucket. Clicking a year selects it. */
+/** Stacked annual bars per canonical bucket (Roth / Traditional / Taxable /
+ *  HSA / Cash — accounts aggregate into their bucket). Clicking a year
+ *  selects it. The tooltip shows each bucket's balance and that year's
+ *  contributions into it. */
 function ProjectionChart({
   projection,
-  accounts,
   onSelectYear,
 }: {
   projection: RetirementProjection
-  accounts: RetirementAccountInput[]
+  accounts?: RetirementAccountInput[]
   selectedYear: number | null
   onSelectYear: (year: number) => void
 }) {
@@ -658,10 +665,18 @@ function ProjectionChart({
     () =>
       projection.years.map((y) => {
         const row: Record<string, number> = { year: y.year, age: y.age }
-        for (const a of y.accounts) row[a.accountId] = Math.max(0, a.endBalance)
+        for (const [bucket, totals] of bucketTotalsForYear(y)) {
+          row[bucket] = totals.balance
+          row[`${bucket}Contributions`] = totals.contributions
+        }
         return row
       }),
     [projection],
+  )
+  const presentBuckets = useMemo(
+    () =>
+      RETIREMENT_BUCKETS.filter((b) => data.some((row) => (row[b] ?? 0) > 0)),
+    [data],
   )
 
   if (data.length === 0) {
@@ -698,23 +713,133 @@ function ProjectionChart({
           contentStyle={chartTooltipStyle}
           itemStyle={chartTooltipItemStyle}
           labelStyle={chartTooltipLabelStyle}
-          formatter={(value: number, name: string) => [formatCurrency(value), name]}
+          formatter={(value: number, name: string, item: { payload?: Record<string, number> }) => {
+            const contrib = item?.payload?.[`${name}Contributions`]
+            return [
+              contrib != null && contrib > 0
+                ? `${formatCurrency(value)} · +${formatCurrency(contrib)} contributed`
+                : formatCurrency(value),
+              name,
+            ]
+          }}
           labelFormatter={(year: number) => {
             const y = projection.years.find((yy) => yy.year === year)
             return y ? `${year} · age ${y.age}${y.preRetirement ? '' : ' · retired'}` : String(year)
           }}
         />
-        {accounts.map((a, i) => (
+        {presentBuckets.map((b) => (
           <Bar
-            key={a.id}
-            dataKey={a.id}
-            name={a.name}
+            key={b}
+            dataKey={b}
+            name={b}
             stackId="total"
-            fill={colorFor(i)}
+            fill={RETIREMENT_BUCKET_COLORS[b]}
           />
         ))}
       </BarChart>
     </ResponsiveContainer>
+  )
+}
+
+/** Best / expected / worst outcome band — deterministic offsets (returns
+ *  ±2pts, inflation ∓1pt), NOT Monte Carlo. Plots the after-tax balance in
+ *  today's dollars so the band reads in spendable terms. */
+function OutcomeRange({ inputs }: { inputs: RetirementInputs }) {
+  const bands = useMemo(() => projectRetirementBands(inputs), [inputs])
+  const data = useMemo(() => {
+    const len = Math.max(
+      bands.worst.years.length,
+      bands.expected.years.length,
+      bands.best.years.length,
+    )
+    const at = (p: RetirementProjection, i: number) =>
+      p.years[Math.min(i, p.years.length - 1)]?.afterTaxTotalEndToday ?? 0
+    return Array.from({ length: len }, (_, i) => {
+      const expected = at(bands.expected, i)
+      const worst = at(bands.worst, i)
+      const best = at(bands.best, i)
+      const yearRow =
+        bands.expected.years[Math.min(i, bands.expected.years.length - 1)]
+      return {
+        year: yearRow?.year ?? 0,
+        age: yearRow?.age ?? 0,
+        range: [Math.min(worst, best), Math.max(worst, best)] as [number, number],
+        expected,
+        worst,
+        best,
+      }
+    })
+  }, [bands])
+
+  const chip = (label: string, p: RetirementProjection) => {
+    const last = p.years[p.years.length - 1]
+    return (
+      <div key={label}>
+        <dt className="eyebrow mb-0.5">{label}</dt>
+        <dd className="text-lg font-semibold tabular-nums text-foreground">
+          {last ? formatCurrency(last.afterTaxTotalEndToday) : '—'}
+          <span className="ml-2 text-sm font-normal text-muted-foreground">
+            {p.shortfallAge != null ? `runs out at ${p.shortfallAge}` : `funded through ${inputs.planThroughAge}`}
+          </span>
+        </dd>
+      </div>
+    )
+  }
+
+  return (
+    <section className="card-surface p-4 md:p-6">
+      <h2 className="eyebrow mb-1">Outcome range — best / expected / worst</h2>
+      <p className="mb-4 text-sm text-muted-foreground">
+        Same plan at returns ±2pts and inflation ∓1pt. After-tax balances in today's dollars.
+      </p>
+      <ResponsiveContainer width="100%" height={260}>
+        <ComposedChart data={data} margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+          <XAxis
+            dataKey="year"
+            tickLine={false}
+            axisLine={false}
+            tick={{ fontSize: 12 }}
+            interval="preserveStartEnd"
+          />
+          <YAxis
+            tickLine={false}
+            axisLine={false}
+            width={72}
+            tick={{ fontSize: 12 }}
+            tickFormatter={(v: number) => formatCurrency(v)}
+          />
+          <Tooltip
+            contentStyle={chartTooltipStyle}
+            itemStyle={chartTooltipItemStyle}
+            labelStyle={chartTooltipLabelStyle}
+            formatter={(value: number | [number, number], name: string) => {
+              if (name === 'range' && Array.isArray(value)) {
+                return [`${formatCurrency(value[0])} – ${formatCurrency(value[1])}`, 'Worst – Best']
+              }
+              return [formatCurrency(value as number), 'Expected']
+            }}
+            labelFormatter={(year: number) => {
+              const row = data.find((d) => d.year === year)
+              return row ? `${year} · age ${row.age}` : String(year)
+            }}
+          />
+          <Area dataKey="range" name="range" stroke="none" fill="#3b82f6" fillOpacity={0.18} />
+          <Line
+            dataKey="expected"
+            name="expected"
+            stroke="#3b82f6"
+            strokeWidth={2}
+            dot={false}
+          />
+        </ComposedChart>
+      </ResponsiveContainer>
+      <dl className="mt-4 grid grid-cols-1 gap-4 border-t border-outline-variant/30 pt-4 sm:grid-cols-3">
+        {chip('Worst', bands.worst)}
+        {chip('Expected', bands.expected)}
+        {chip('Best', bands.best)}
+      </dl>
+    </section>
   )
 }
 
@@ -744,6 +869,11 @@ function YearDetail({ year }: { year: RetirementYear }) {
           Total{' '}
           <strong className="tabular-nums text-foreground">{formatCurrency(year.totalEnd)}</strong>
           <span className="text-muted-foreground"> · {formatCurrency(year.totalEndToday)} today$</span>
+        </span>
+        <span className="text-muted-foreground">
+          After tax{' '}
+          <strong className="tabular-nums text-foreground">{formatCurrency(year.afterTaxTotalEnd)}</strong>
+          <span className="text-muted-foreground"> · {formatCurrency(year.afterTaxTotalEndToday)} today$</span>
         </span>
         {year.shortfall && (
           <span className="font-semibold text-destructive">Shortfall this year</span>
@@ -795,6 +925,7 @@ interface CompareStats {
   verdictBad: boolean
   endNominal: number
   endToday: number
+  endAfterTaxToday: number
   contributions: number
   gapMonthly: number | null
 }
@@ -813,6 +944,7 @@ function statsFor(s: RetirementScenario): CompareStats {
     verdictBad: p.shortfallAge != null,
     endNominal: last.totalEnd,
     endToday: last.totalEndToday,
+    endAfterTaxToday: last.afterTaxTotalEndToday,
     contributions: totalContributions(p),
     gapMonthly: extraMonthlySavingsToCloseGap(s.inputs),
   }
@@ -833,6 +965,7 @@ function ScenarioCompare({ a, b }: { a: RetirementScenario; b: RetirementScenari
     { label: 'Verdict', fa: (s) => s.verdict, bad: (s) => s.verdictBad },
     { label: 'Ending balance (nominal)', fa: (s) => formatCurrency(s.endNominal) },
     { label: "Ending balance (today's $)", fa: (s) => formatCurrency(s.endToday) },
+    { label: "Ending balance (after tax, today's $)", fa: (s) => formatCurrency(s.endAfterTaxToday) },
     { label: 'Total contributions', fa: (s) => formatCurrency(s.contributions) },
     {
       label: 'Extra/mo to close gap',

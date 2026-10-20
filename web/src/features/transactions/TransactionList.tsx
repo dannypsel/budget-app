@@ -4,7 +4,7 @@
 // Mirrors iOS TransactionRowView + day grouping.
 
 import { useMemo, type ReactNode } from 'react'
-import { ArrowLeftRight, EyeOff, Split, Undo2, type LucideIcon } from 'lucide-react'
+import { ArrowLeftRight, CheckCircle2, Circle, EyeOff, Split, Undo2, type LucideIcon } from 'lucide-react'
 import { CategoryBadge } from '@/components/finance/CategoryBadge'
 import { Amount } from '@/components/finance/Amount'
 import { iconForSymbol } from '@/lib/iconMap'
@@ -46,6 +46,11 @@ export function TransactionList({
   accounts,
   onSelect,
   renderTags,
+  selectedIds,
+  onToggleSelect,
+  onToggleReviewed,
+  showCategory = true,
+  flat = false,
 }: {
   transactions: Transaction[]
   /** Optional lookup map for rendering the account name under each row. */
@@ -54,13 +59,28 @@ export function TransactionList({
   /** Optional per-row controls (e.g. tag selects) rendered beneath the row,
    *  outside the row's tap target so they stay clickable. */
   renderTags?: (t: Transaction) => ReactNode
+  /** Bulk-selection mode (Transactions page): when provided, each row gets a
+   *  checkbox bound to this set. */
+  selectedIds?: Set<UUID>
+  onToggleSelect?: (t: Transaction) => void
+  /** When provided, each row gets a Reviewed toggle (Simplifi's circled check). */
+  onToggleReviewed?: (t: Transaction) => void
+  /** Column-visibility toggle: hide the category label in the meta line. */
+  showCategory?: boolean
+  /** Render as one flat card without day headers (non-date sort orders). */
+  flat?: boolean
 }) {
-  const groups = useMemo(() => groupByDay(transactions), [transactions])
+  const groups = useMemo(
+    () => (flat ? [['__flat__', transactions] as [string, Transaction[]]] : groupByDay(transactions)),
+    [transactions, flat],
+  )
   return (
     <div className="space-y-6">
       {groups.map(([day, rows]) => (
         <section key={day}>
-          <h2 className="mb-3 text-xl font-medium text-foreground">{formatDayHeader(day)}</h2>
+          {!flat && (
+            <h2 className="mb-3 text-xl font-medium text-foreground">{formatDayHeader(day)}</h2>
+          )}
           <div className="overflow-hidden card-surface border border-border">
             {rows.map((t) => {
               // A reimbursement is a credit, but treat it as a contra-expense (not income):
@@ -80,9 +100,21 @@ export function TransactionList({
                   key={t.id}
                   className="border-b border-border transition-colors last:border-b-0 hover:bg-accent"
                 >
+                  <div className="flex items-stretch">
+                  {selectedIds && onToggleSelect && (
+                    <label className="flex shrink-0 cursor-pointer items-center pl-4">
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(t.id)}
+                        onChange={() => onToggleSelect(t)}
+                        aria-label={`Select ${displayName(t)}`}
+                        className="h-4 w-4 accent-primary"
+                      />
+                    </label>
+                  )}
                   <button
                     onClick={() => onSelect?.(t)}
-                    className="group flex w-full items-center gap-4 p-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+                    className="group flex min-w-0 flex-1 items-center gap-4 p-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
                   >
                   <span
                     aria-hidden="true"
@@ -122,9 +154,9 @@ export function TransactionList({
                             <CategoryBadge key={s.id} category={s.categories} />
                           ))}
                         </>
-                      ) : (
+                      ) : showCategory ? (
                         <span className="truncate">{t.categories?.name ?? 'Uncategorized'}</span>
-                      )}
+                      ) : null}
                       {t.pending && (
                         <span className="font-semibold text-warning">Pending</span>
                       )}
@@ -137,6 +169,26 @@ export function TransactionList({
                   </div>
                   <Amount value={t.amount} className="shrink-0 text-xl font-semibold" />
                   </button>
+                  {onToggleReviewed && (
+                    <button
+                      type="button"
+                      onClick={() => onToggleReviewed(t)}
+                      aria-label={t.reviewed ? `Mark ${displayName(t)} as unreviewed` : `Mark ${displayName(t)} as reviewed`}
+                      aria-pressed={!!t.reviewed}
+                      title={t.reviewed ? 'Reviewed' : 'Mark as reviewed'}
+                      className={cn(
+                        'flex shrink-0 items-center pr-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
+                        t.reviewed ? 'text-secondary' : 'text-muted-foreground/40 hover:text-muted-foreground',
+                      )}
+                    >
+                      {t.reviewed ? (
+                        <CheckCircle2 className="h-5 w-5" aria-hidden />
+                      ) : (
+                        <Circle className="h-5 w-5" aria-hidden />
+                      )}
+                    </button>
+                  )}
+                  </div>
                   {renderTags?.(t)}
                 </div>
               )

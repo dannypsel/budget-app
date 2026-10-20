@@ -1,7 +1,8 @@
 // Port of PocketLens/Services/CategorySuggester.swift — keep in lockstep with iOS so the
-// swipe-review suggestions match. Precedence (specificity wins):
-//   learned merchant memory -> keyword rule (longest match) -> income by sign
-//   -> Plaid PFC detailed map -> Plaid PFC primary map -> (suggest) fallback "Other".
+// swipe-review suggestions match. Precedence (Daniel's signal order, 2026-09-30):
+//   Plaid PFC detailed map -> Plaid PFC primary map -> learned merchant memory
+//   -> keyword rule (longest match) -> income by sign -> (suggest) fallback "Other".
+// Mirrors backend categorizer.apply_learned exactly.
 
 import type { Category, CategoryRule, Transaction, UUID } from '@/types/domain'
 import { merchantKey } from '@/types/domain'
@@ -22,7 +23,6 @@ const detailMap: Record<string, string> = {
 // Plaid PFC primary -> our category name.
 const plaidMap: Record<string, string> = {
   INCOME: 'Income',
-  TRANSFER_IN: 'Income',
   FOOD_AND_DRINK: 'Dining & Drinks',
   TRANSPORTATION: 'Auto & Transport',
   TRAVEL: 'Travel',
@@ -95,15 +95,35 @@ export function autoMatch(
   return id
 }
 
-/** Inner precedence ladder for autoMatch (memory -> rule -> income-by-sign ->
- *  Plaid PFC maps). Kept separate so the Income guard above applies to every
- *  source uniformly. */
+/** Inner precedence ladder for autoMatch (Plaid PFC maps -> memory -> rule ->
+ *  income-by-sign). Kept separate so the Income guard above applies to every
+ *  source uniformly. Transfer primaries never map (TRANSFER_IN is money
+ *  moved, not income) — plaidMap deliberately omits them as category sources
+ *  except INCOME itself. */
 function autoMatchInner(
   txn: Transaction,
   memory: Record<string, UUID>,
   rules: CategoryRule[],
   categories: Category[],
 ): UUID | null {
+  const byName = (n: string) => categories.find((c) => c.name === n)
+  const isTransferSignal =
+    txn.plaid_category === 'TRANSFER_IN' ||
+    txn.plaid_category === 'TRANSFER_OUT' ||
+    txn.plaid_category === 'LOAN_PAYMENTS'
+  if (!isTransferSignal) {
+    const d = txn.plaid_category_detail?.toUpperCase()
+    if (d && detailMap[d]) {
+      const c = byName(detailMap[d])
+      if (c) return c.id
+    }
+    const p = txn.plaid_category?.toUpperCase()
+    if (p && plaidMap[p]) {
+      const c = byName(plaidMap[p])
+      if (c) return c.id
+    }
+  }
+
   const key = merchantKey(txn)
   if (key && memory[key]) return memory[key]
 
@@ -111,20 +131,11 @@ function autoMatchInner(
   const winner = matchRule(txn, rules)
   if (winner?.category_id) return winner.category_id
 
-  const byName = (n: string) => categories.find((c) => c.name === n)
-  if (txn.amount < 0) {
+  // Income by sign — but never for a Plaid transfer signal: a TRANSFER_IN
+  // leg is money moved between accounts, not income (mirrors the backend).
+  if (txn.amount < 0 && !isTransferSignal) {
     const inc = byName('Income')
     if (inc) return inc.id
-  }
-  const d = txn.plaid_category_detail?.toUpperCase()
-  if (d && detailMap[d]) {
-    const c = byName(detailMap[d])
-    if (c) return c.id
-  }
-  const p = txn.plaid_category?.toUpperCase()
-  if (p && plaidMap[p]) {
-    const c = byName(plaidMap[p])
-    if (c) return c.id
   }
   return null
 }

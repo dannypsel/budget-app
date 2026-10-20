@@ -39,6 +39,11 @@ vi.mock('@/data/hooks', () => ({
   useUpsertCategory: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
   useDeleteCategory: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
   useBulkCategorizeMerchant: () => ({ mutate: vi.fn() }),
+  // Simplifi-parity additions: range presets, reviewed flag, bulk-by-ids, + New.
+  useTransactionsRange: () => ({ data: [], isPending: false, isError: false, refetch: vi.fn() }),
+  useSetReviewed: () => ({ mutate: vi.fn() }),
+  useBulkSetCategoryByIds: () => ({ mutate: vi.fn() }),
+  useCreateManualTransaction: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useSavedViews: () => ({ data: [] }),
   useCreateSavedView: () => ({ mutateAsync: vi.fn() }),
   useDeleteSavedView: () => ({ mutate: vi.fn() }),

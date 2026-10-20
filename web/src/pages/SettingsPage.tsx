@@ -27,7 +27,6 @@ import {
   FolderCog,
   Gamepad2,
   Landmark,
-  ListChecks,
   Monitor,
   Moon,
   Pencil,
@@ -69,7 +68,6 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { Checkbox } from '@/components/ui/checkbox'
 import { useAuth } from '@/lib/auth'
 import { autoCategorize, fetchCategorizeStatus } from '@/data/aiCategorize'
 import * as disc from '@/data/discretionary'
@@ -183,7 +181,7 @@ function SectionView({
   )
 }
 
-type Section = 'general' | 'accounts' | 'categories' | 'rules' | 'ai' | 'notifications' | 'data' | 'gameTypes' | 'hiddenCredits' | 'watched'
+type Section = 'general' | 'accounts' | 'categories' | 'rules' | 'ai' | 'notifications' | 'data' | 'gameTypes' | 'hiddenCredits'
 
 const SECTIONS: { id: Section; label: string; Icon: typeof User }[] = [
   { id: 'general', label: 'General', Icon: User },
@@ -195,7 +193,6 @@ const SECTIONS: { id: Section; label: string; Icon: typeof User }[] = [
   { id: 'data', label: 'Data', Icon: Database },
   { id: 'gameTypes', label: 'Game types', Icon: Gamepad2 },
   { id: 'hiddenCredits', label: 'Card credits', Icon: EyeOff },
-  { id: 'watched', label: 'Watched categories', Icon: ListChecks },
 ]
 
 export default function SettingsPage() {
@@ -311,7 +308,6 @@ export default function SettingsPage() {
   if (section === 'gameTypes') return <GameTypesSection onBack={() => setSection(null)} />
   if (section === 'hiddenCredits')
     return <HiddenCreditsSection onBack={() => setSection(null)} />
-  if (section === 'watched') return <WatchedCategoriesSection onBack={() => setSection(null)} />
 
   return (
     <div className="space-y-6 pt-4 md:pt-6">
@@ -1955,94 +1951,6 @@ function HiddenCreditsSection({ onBack }: { onBack: () => void }) {
         <p className="text-xs text-muted-foreground">
           Hidden credits are excluded from every credit list, total, and count across the app.
         </p>
-      </div>
-    </SectionView>
-  )
-}
-
-// ─── Watched categories: spending-plan subset ───────────────────────────────
-
-const WATCHED_DEFAULTS = ['shopping', 'dining & drinks', 'groceries']
-
-function WatchedCategoriesSection({ onBack }: { onBack: () => void }) {
-  const { data: profile } = useMyProfile()
-  const updateProfile = useUpdateMyProfile()
-  const { data: categories = [], isLoading } = useCategories()
-
-  const active = useMemo(() => categories.filter((c) => c.is_active !== false), [categories])
-
-  // Saved ids when set; otherwise the seed defaults matched by name.
-  const initialIds = useMemo(() => {
-    if (profile?.watched_categories && profile.watched_categories.length > 0) {
-      const saved = new Set(profile.watched_categories)
-      return active.filter((c) => saved.has(c.id)).map((c) => c.id)
-    }
-    const byName = new Map(active.map((c) => [c.name.trim().toLowerCase(), c.id]))
-    return WATCHED_DEFAULTS.map((n) => byName.get(n)).filter((id): id is string => !!id)
-  }, [profile?.watched_categories, active])
-
-  const [selected, setSelected] = useState<string[] | null>(null)
-  useEffect(() => {
-    setSelected(null)
-  }, [profile?.watched_categories])
-  const current = selected ?? initialIds
-  const dirty = selected !== null && selected.join(',') !== initialIds.join(',')
-
-  function toggle(id: string) {
-    const list = selected ?? initialIds
-    setSelected(list.includes(id) ? list.filter((x) => x !== id) : [...list, id])
-  }
-
-  function save() {
-    const list = selected ?? initialIds
-    toast.promise(updateProfile.mutateAsync({ watched_categories: list }), {
-      loading: 'Saving…',
-      success: 'Watched categories saved',
-      error: (e) => (e instanceof Error ? e.message : 'Could not save'),
-    })
-  }
-
-  return (
-    <SectionView title="Watched categories" onBack={onBack}>
-      <div className="space-y-6">
-        <section className="card-surface p-2 md:p-3">
-          {isLoading ? (
-            <p className="px-4 py-8 text-center text-sm text-muted-foreground">Loading…</p>
-          ) : active.length === 0 ? (
-            <p className="px-4 py-8 text-center text-sm text-muted-foreground">
-              No categories yet.
-            </p>
-          ) : (
-            <div className="divide-y divide-border">
-              {active.map((cat) => {
-                const checked = current.includes(cat.id)
-                return (
-                  <label
-                    key={cat.id}
-                    className="flex cursor-pointer items-center gap-3 px-2 py-2.5"
-                  >
-                    <Checkbox
-                      checked={checked}
-                      onCheckedChange={() => toggle(cat.id)}
-                      aria-label={`Watch ${cat.name}`}
-                    />
-                    <CategoryIcon category={cat} size={32} />
-                    <span className="truncate text-base text-foreground">{cat.name}</span>
-                  </label>
-                )
-              })}
-            </div>
-          )}
-        </section>
-        <section className="card-surface p-6">
-          <p className="mb-4 text-sm text-muted-foreground">
-            These categories appear in the Overview spending plan — a focused subset instead of
-            every category.
-          </p>
-          <Button type="button" onClick={save} disabled={!dirty || updateProfile.isPending}>
-            {updateProfile.isPending ? 'Saving…' : 'Save watched categories'}
-          </Button>
-        </section>
       </div>
     </SectionView>
   )

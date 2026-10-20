@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
   availableToSavePerYear,
+  bucketTotalsForYear,
   defaultRetirementInputs,
   extraMonthlySavingsToCloseGap,
   newRetirementAccount,
   projectRetirement,
+  projectRetirementBands,
+  retirementBucketFor,
 } from './retirement'
 import type { RetirementInputs } from '@/types/domain'
 
@@ -230,5 +233,79 @@ describe('extraMonthlySavingsToCloseGap', () => {
     expect(
       projectRetirement(gi, { startYear: START, extraMonthlySavings: extra! }).shortfallAge,
     ).toBeNull()
+  })
+})
+
+describe('after-tax balances, buckets, and bands', () => {
+  it('haircuts only Traditional balances by the expected retirement tax rate', () => {
+    const p = projectRetirement(
+      inputs({
+        currentAge: 40,
+        planThroughAge: 40,
+        preRetirementReturnPct: 0,
+        preRetirementIncome: 0,
+        preRetirementSpending: 0,
+        retirementTaxRatePct: 25,
+        accounts: [
+          newRetirementAccount({ name: 'Trad', taxTreatment: 'traditional', balance: 10000 }),
+          newRetirementAccount({ name: 'Roth', taxTreatment: 'roth', balance: 10000 }),
+          newRetirementAccount({ name: 'Tax', taxTreatment: 'taxable', balance: 10000 }),
+        ],
+      }),
+      { startYear: START },
+    )
+    const y = p.years[0]
+    expect(y.totalEnd).toBeCloseTo(30000, 6)
+    // 30,000 − 25% × 10,000 traditional = 27,500 spendable.
+    expect(y.afterTaxTotalEnd).toBeCloseTo(27500, 6)
+    expect(y.afterTaxTotalEndToday).toBeCloseTo(27500, 6) // inflation 0 in this fixture
+  })
+
+  it('aggregates accounts into the five canonical buckets', () => {
+    expect(retirementBucketFor({ name: 'HSA', taxTreatment: 'roth' })).toBe('HSA')
+    expect(retirementBucketFor({ name: 'Roth IRA', taxTreatment: 'roth' })).toBe('Roth')
+    expect(retirementBucketFor({ name: 'Cash', taxTreatment: 'taxable' })).toBe('Cash')
+    expect(retirementBucketFor({ name: 'Brokerage', taxTreatment: 'taxable' })).toBe('Taxable')
+
+    const p = projectRetirement(
+      inputs({
+        currentAge: 40,
+        planThroughAge: 40,
+        preRetirementReturnPct: 0,
+        preRetirementIncome: 15, // exactly covers contributions — no surplus withdrawal
+        preRetirementSpending: 0,
+        accounts: [
+          newRetirementAccount({ name: 'Roth IRA', taxTreatment: 'roth', balance: 100, annualContribution: 10 }),
+          newRetirementAccount({ name: 'Roth 2', taxTreatment: 'roth', balance: 50, annualContribution: 5 }),
+          newRetirementAccount({ name: '401k', taxTreatment: 'traditional', balance: 200 }),
+        ],
+      }),
+      { startYear: START },
+    )
+    const buckets = bucketTotalsForYear(p.years[0])
+    expect(buckets.get('Roth')).toEqual({ balance: 165, contributions: 15 })
+    expect(buckets.get('Traditional')).toEqual({ balance: 200, contributions: 0 })
+  })
+
+  it('orders band endings best ≥ expected ≥ worst', () => {
+    const inp = inputs({
+      currentAge: 40,
+      retirementAge: 60,
+      planThroughAge: 70,
+      preRetirementReturnPct: 7,
+      postRetirementReturnPct: 4,
+      inflationPct: 3,
+      preRetirementIncome: 100000,
+      preRetirementSpending: 60000,
+      postRetirementSpending: 40000,
+      accounts: [
+        newRetirementAccount({ name: 'Tax', taxTreatment: 'taxable', balance: 100000, annualContribution: 10000 }),
+      ],
+    })
+    const bands = projectRetirementBands(inp)
+    const end = (p: ReturnType<typeof projectRetirement>) =>
+      p.years[p.years.length - 1].afterTaxTotalEndToday
+    expect(end(bands.best)).toBeGreaterThanOrEqual(end(bands.expected))
+    expect(end(bands.expected)).toBeGreaterThanOrEqual(end(bands.worst))
   })
 })

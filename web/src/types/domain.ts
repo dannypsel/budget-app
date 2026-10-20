@@ -73,6 +73,7 @@ export interface Transaction {
   transfer_opt_out: boolean // user said "not a transfer" — auto-detection skips it
   hidden: boolean // user-hidden: kept but not counted (exclude_from_totals follows it)
   is_reimbursement: boolean // contra-expense: a credit that nets down its category's spend
+  reviewed?: boolean // user-checked (Simplifi's Reviewed); optional: absent until the 20261031 migration runs
   // Plaid-owned merchant location + settlement currency. All nullable —
   // Plaid omits them for many txns, and rows predating the feature stay null until a
   // re-sync. Forward-only groundwork for trip tagging (region) + foreign-txn detection.
@@ -617,6 +618,7 @@ export type ChurnCreditInsert = Pick<ChurnCredit, 'card_id' | 'credit_name' | 'a
       | 'period_start_date'
       | 'used_at'
       | 'detected_transaction_id'
+      | 'detected_transaction_ids'
       | 'detection_source'
       | 'detection_dismissed_transaction_ids'
       | 'is_hidden'

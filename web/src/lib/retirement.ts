@@ -34,6 +34,11 @@ export interface RetirementYear {
   totalEnd: number
   /** End balance expressed in today's dollars. */
   totalEndToday: number
+  /** End balance after haircutting Traditional balances by the expected
+   *  retirement tax rate — the spendable (after-tax) figure. */
+  afterTaxTotalEnd: number
+  /** afterTaxTotalEnd expressed in today's dollars. */
+  afterTaxTotalEndToday: number
   withdrawals: number
   estimatedTax: number
   /** Spending actually funded (nominal); < spending when shortfall. */
@@ -262,6 +267,13 @@ export function projectRetirement(
     }
     const totalStart = rows.reduce((s, r) => s + r.startBalance, 0)
     const totalEnd = rows.reduce((s, r) => s + r.endBalance, 0)
+    // After-tax view: Traditional balances will be taxed on withdrawal at
+    // the expected retirement rate; Roth/HSA and taxable/cash count in full
+    // (no capital-gains modeling in this simple model).
+    const traditionalEnd = rows
+      .filter((r) => r.taxTreatment === 'traditional')
+      .reduce((s, r) => s + r.endBalance, 0)
+    const afterTaxTotalEnd = totalEnd - traditionalEnd * taxRate
 
     const shortfall = unmet > 0.005
     if (shortfall && shortfallAge == null) shortfallAge = age
@@ -276,6 +288,8 @@ export function projectRetirement(
       totalStart,
       totalEnd,
       totalEndToday: infl > 0 ? totalEnd / infl : totalEnd,
+      afterTaxTotalEnd,
+      afterTaxTotalEndToday: infl > 0 ? afterTaxTotalEnd / infl : afterTaxTotalEnd,
       withdrawals,
       estimatedTax,
       netToSpending: spending - unmet,
@@ -294,6 +308,81 @@ export function projectRetirement(
     years,
     shortfallAge,
     fundedThroughAge: shortfallAge != null ? shortfallAge - 1 : inputs.planThroughAge,
+  }
+}
+
+// ─── Canonical buckets ────────────────────────────────────────────────────────
+
+/** The five chart buckets, in stack order. Accounts aggregate into these by
+ *  tax treatment + name, so two Roth IRAs render as one Roth segment. */
+export const RETIREMENT_BUCKETS = ['Roth', 'Traditional', 'Taxable', 'HSA', 'Cash'] as const
+export type RetirementBucket = (typeof RETIREMENT_BUCKETS)[number]
+
+export const RETIREMENT_BUCKET_COLORS: Record<RetirementBucket, string> = {
+  Roth: '#8b5cf6',
+  Traditional: '#3b82f6',
+  Taxable: '#f59e0b',
+  HSA: '#10b981',
+  Cash: '#06b6d4',
+}
+
+/** Which canonical bucket an account belongs to. HSA is detected by name
+ *  (the model's tax treatments are only taxable/traditional/roth; the seeded
+ *  HSA carries roth treatment but charts as its own bucket), and a taxable
+ *  account named like cash charts as Cash. */
+export function retirementBucketFor(account: {
+  name: string
+  taxTreatment: RetirementTaxTreatment
+}): RetirementBucket {
+  const name = account.name.toLowerCase()
+  if (name.includes('hsa')) return 'HSA'
+  if (account.taxTreatment === 'roth') return 'Roth'
+  if (account.taxTreatment === 'traditional') return 'Traditional'
+  if (name.includes('cash') || name.includes('savings')) return 'Cash'
+  return 'Taxable'
+}
+
+/** Per-bucket balance + contributions for one projected year. */
+export function bucketTotalsForYear(
+  year: RetirementYear,
+): Map<RetirementBucket, { balance: number; contributions: number }> {
+  const map = new Map<RetirementBucket, { balance: number; contributions: number }>()
+  for (const bucket of RETIREMENT_BUCKETS) map.set(bucket, { balance: 0, contributions: 0 })
+  for (const row of year.accounts) {
+    const bucket = retirementBucketFor(row)
+    const entry = map.get(bucket)!
+    entry.balance += Math.max(0, row.endBalance)
+    entry.contributions += row.contributions + row.oneTime
+  }
+  return map
+}
+
+// ─── Outcome bands ────────────────────────────────────────────────────────────
+
+/** Deterministic best / expected / worst bands (NOT Monte Carlo): the same
+ *  model run at return ∓ offsets and inflation ± an offset. Worst = returns
+ *  −2pts and inflation +1pt; best = returns +2pts and inflation −1pt
+ *  (floored at 0). */
+export const BAND_RETURN_OFFSET_PCT = 2
+export const BAND_INFLATION_OFFSET_PCT = 1
+
+export interface RetirementBands {
+  worst: RetirementProjection
+  expected: RetirementProjection
+  best: RetirementProjection
+}
+
+export function projectRetirementBands(inputs: RetirementInputs): RetirementBands {
+  const shifted = (returnDelta: number, inflationDelta: number): RetirementInputs => ({
+    ...inputs,
+    preRetirementReturnPct: Math.max(0, inputs.preRetirementReturnPct + returnDelta),
+    postRetirementReturnPct: Math.max(0, inputs.postRetirementReturnPct + returnDelta),
+    inflationPct: Math.max(0, inputs.inflationPct + inflationDelta),
+  })
+  return {
+    worst: projectRetirement(shifted(-BAND_RETURN_OFFSET_PCT, BAND_INFLATION_OFFSET_PCT)),
+    expected: projectRetirement(inputs),
+    best: projectRetirement(shifted(BAND_RETURN_OFFSET_PCT, -BAND_INFLATION_OFFSET_PCT)),
   }
 }
 

@@ -25,6 +25,48 @@ CATEGORY_TAG_DEFAULTS: dict[str, tuple[str, str]] = {
 _VALID_NEED_WANT = ("need", "want")
 _VALID_SPEND_PATTERN = ("fixed", "variable")
 
+#: Plaid Personal Finance Category → PocketLens category name. Daniel's
+#: signal order (2026-09-30): bank-provided category data FIRST, then
+#: merchant-level memory / learned overrides, then keyword rules, then
+#: income-by-sign, then Jev AI (which receives the bank category as prompt
+#: context). Detailed PFC is finer than primary, so it is checked first.
+#: Mirrors web/src/lib/categorySuggester.ts (detailMap / plaidMap) — keep in
+#: lockstep. Transfer primaries (TRANSFER_IN / TRANSFER_OUT / LOAN_PAYMENTS)
+#: are deliberately absent: transfer legs are handled by transfers.py and
+#: must never be stamped with a spend/income category here.
+PLAID_DETAIL_CATEGORY_MAP: dict[str, str] = {
+    "FOOD_AND_DRINK_GROCERIES": "Groceries",
+    "FOOD_AND_DRINK_RESTAURANT": "Dining & Drinks",
+    "FOOD_AND_DRINK_FAST_FOOD": "Dining & Drinks",
+    "FOOD_AND_DRINK_COFFEE": "Dining & Drinks",
+    "FOOD_AND_DRINK_BEER_WINE_AND_LIQUOR": "Dining & Drinks",
+    "TRANSPORTATION_TAXIS_AND_RIDE_SHARES": "Auto & Transport",
+    "TRANSPORTATION_PUBLIC_TRANSIT": "Auto & Transport",
+    "TRANSPORTATION_GAS": "Auto & Transport",
+    "RENT_AND_UTILITIES_RENT": "Rent",
+}
+
+PLAID_PRIMARY_CATEGORY_MAP: dict[str, str] = {
+    "INCOME": "Income",
+    "FOOD_AND_DRINK": "Dining & Drinks",
+    "TRANSPORTATION": "Auto & Transport",
+    "TRAVEL": "Travel",
+    "RENT_AND_UTILITIES": "Utilities",
+}
+
+
+def plaid_category_name(txn: dict) -> str | None:
+    """The PocketLens category name implied by the bank-provided Plaid PFC
+    data on this transaction (detailed first, then primary), or None when
+    Plaid offered nothing mappable. Transfer signals never map."""
+    if (txn.get('plaid_category') or '') in PFC_TRANSFER:
+        return None
+    detail = (txn.get('plaid_category_detail') or '').upper()
+    if detail in PLAID_DETAIL_CATEGORY_MAP:
+        return PLAID_DETAIL_CATEGORY_MAP[detail]
+    primary = (txn.get('plaid_category') or '').upper()
+    return PLAID_PRIMARY_CATEGORY_MAP.get(primary)
+
 
 def _merchant_key(txn: dict) -> str:
     """Normalized merchant identity. MUST match the app's Transaction.merchantKey
@@ -118,7 +160,8 @@ def load_guess_context(user_id: str) -> dict:
         tag_memory = {}
 
     return {'rules': rules, 'memory': memory, 'income_id': income_id,
-            'cat_names': cat_names, 'tag_memory': tag_memory}
+            'cat_names': cat_names, 'tag_memory': tag_memory,
+            'cat_ids_by_name': {c['name']: c['id'] for c in cats if c.get('id')}}
 
 
 def fill_txn_tags(rows: list[dict], ctx: dict) -> list[dict]:
@@ -193,18 +236,24 @@ def _is_card_refund(txn: dict, acct_types: dict) -> bool:
 
 
 def apply_learned(transactions: list[dict], ctx: dict, acct_types: dict = None) -> list[dict]:
-    """On sync, auto-apply only high-confidence, user-derived guesses:
-    learned merchant memory → conditional keyword rules → income by amount sign.
-    A matched rule can set a category and/or flag the row as a reimbursement
-    (contra-expense). Plaid-category guesses are intentionally NOT auto-applied —
-    they surface in the in-app review flow so the user confirms them (and thereby
-    teaches memory).
+    """On sync, auto-apply category guesses in Daniel's signal order:
+    bank-provided Plaid category (detailed → primary) → learned merchant
+    memory → conditional keyword rules → income by amount sign. Anything still
+    uncategorized falls through to the Jev AI pass, whose prompt carries the
+    bank category as context. A matched rule can set a category and/or flag
+    the row as a reimbursement (contra-expense).
+
+    Simplifi-aligned semantics mirrored here: amounts are signed (positive =
+    outflow/spend, negative = inflow); card credits/refunds are contra-
+    expenses (reimbursements), never income; linked transfer legs carry no
+    spend category at all — transfers.py excludes them from totals.
 
     `acct_types` maps account_id (uuid) → account type, used to auto-flag credit-
     card refunds as reimbursements (see `_is_card_refund`)."""
     memory = ctx['memory']
     rules = ctx['rules']
     income_id = ctx['income_id']
+    cat_ids_by_name = ctx.get('cat_ids_by_name') or {}
 
     for txn in transactions:
         # The most specific (longest-keyword) rule whose conditions all pass wins;
@@ -213,8 +262,16 @@ def apply_learned(transactions: list[dict], ctx: dict, acct_types: dict = None) 
         card_refund = _is_card_refund(txn, acct_types)
 
         if not txn.get('category_id'):
+            plaid_name = plaid_category_name(txn)
+            # A card refund is a contra-expense, never income — don't let a
+            # Plaid INCOME signal stamp it (it is flagged reimbursement below
+            # and surfaces for its real expense category instead).
+            if card_refund and plaid_name == 'Income':
+                plaid_name = None
             key = _merchant_key(txn)
-            if key and key in memory:
+            if plaid_name and cat_ids_by_name.get(plaid_name):
+                txn['category_id'] = cat_ids_by_name[plaid_name]
+            elif key and key in memory:
                 txn['category_id'] = memory[key]
             elif winner and winner.get('category_id'):
                 txn['category_id'] = winner['category_id']

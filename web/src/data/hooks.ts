@@ -241,11 +241,11 @@ export function useTransactionsMonthAll(month: Date) {
 /** Transactions in an arbitrary [startISO, endISO] range (Reports page). Fetches
  *  excluded/transfer rows too — the page applies its exclude toggles client-side
  *  so toggling is instant. Nested under ['sb','transactions'] so mutations refresh it. */
-export function useTransactionsRange(startISO: string, endISO: string) {
+export function useTransactionsRange(startISO: string, endISO: string, opts: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: sbKeys.transactionsRange(startISO, endISO),
     queryFn: () => txns.fetchTransactionsRange(startISO, endISO, { includeExcluded: true }),
-    enabled: startISO !== '' && endISO !== '' && startISO <= endISO,
+    enabled: (opts.enabled ?? true) && startISO !== '' && endISO !== '' && startISO <= endISO,
   })
 }
 export function useRecent(days: number) {
@@ -733,6 +733,35 @@ export function useSetCategory() {
       qc.invalidateQueries({ queryKey: ['sb', 'transactions'] })
       qc.invalidateQueries({ queryKey: sbKeys.merchantMemory })
     },
+  })
+}
+
+/** Toggle the Simplifi-style Reviewed flag on one or many rows. */
+export function useSetReviewed() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ ids, reviewed }: { ids: UUID[]; reviewed: boolean }) =>
+      txns.setReviewed(ids, reviewed),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['sb', 'transactions'] }),
+  })
+}
+
+/** Bulk-apply one category to a set of selected rows (no memory learning). */
+export function useBulkSetCategoryByIds() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ ids, categoryId }: { ids: UUID[]; categoryId: UUID | null }) =>
+      txns.bulkSetCategoryByIds(ids, categoryId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['sb', 'transactions'] }),
+  })
+}
+
+/** Create a manual transaction from the "+ New" dialog. */
+export function useCreateManualTransaction() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input: txns.ManualTransactionInput) => txns.createManualTransaction(input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['sb', 'transactions'] }),
   })
 }
 

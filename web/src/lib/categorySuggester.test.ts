@@ -33,17 +33,24 @@ function txn(p: Partial<Transaction>): Transaction {
 }
 
 describe('autoMatch precedence', () => {
-  it('1. learned merchant memory wins over everything', () => {
+  it('1. Plaid detailed PFC map wins over memory and rules (bank category first)', () => {
     const t = txn({
       merchant_name: 'Starbucks',
       amount: -100, // would otherwise be Income by sign
-      plaid_category_detail: 'FOOD_AND_DRINK_GROCERIES', // would otherwise be Groceries
+      plaid_category_detail: 'FOOD_AND_DRINK_GROCERIES',
     })
     const memory = { starbucks: cat('Dining & Drinks') }
-    expect(autoMatch(t, memory, [], categories)).toBe(cat('Dining & Drinks'))
+    expect(autoMatch(t, memory, [], categories)).toBe(cat('Groceries'))
   })
 
-  it('2. keyword rule matches, longest keyword first', () => {
+  it('2. learned merchant memory wins over rules and income-by-sign', () => {
+    const t = txn({ merchant_name: 'Starbucks', amount: -100 })
+    const memory = { starbucks: cat('Dining & Drinks') }
+    const rules = [makeRule({ id: '1', keyword: 'starbucks', category_id: cat('Shopping') })]
+    expect(autoMatch(t, memory, rules, categories)).toBe(cat('Dining & Drinks'))
+  })
+
+  it('3. keyword rule matches, longest keyword first', () => {
     const t = txn({ merchant_name: 'Shell Gas Station' })
     const rules = [
       makeRule({ id: '1', keyword: 'gas', category_id: cat('Utilities') }),
@@ -52,19 +59,21 @@ describe('autoMatch precedence', () => {
     expect(autoMatch(t, {}, rules, categories)).toBe(cat('Auto & Transport'))
   })
 
-  it('3. income by sign when amount < 0', () => {
+  it('4. income by sign when amount < 0', () => {
     const t = txn({ merchant_name: 'Acme Payroll', amount: -2650 })
     expect(autoMatch(t, {}, [], categories)).toBe(cat('Income'))
-  })
-
-  it('4. Plaid detailed PFC map', () => {
-    const t = txn({ merchant_name: 'X', plaid_category_detail: 'TRANSPORTATION_GAS' })
-    expect(autoMatch(t, {}, [], categories)).toBe(cat('Auto & Transport'))
   })
 
   it('5. Plaid primary PFC map (when no detail match)', () => {
     const t = txn({ merchant_name: 'X', plaid_category: 'RENT_AND_UTILITIES' })
     expect(autoMatch(t, {}, [], categories)).toBe(cat('Utilities'))
+  })
+
+  it('transfer signals never map to a category — not even Income by sign', () => {
+    const t = txn({ merchant_name: 'X', amount: -500, plaid_category: 'TRANSFER_IN' })
+    expect(autoMatch(t, {}, [], categories)).toBeNull()
+    const out = txn({ merchant_name: 'X', amount: 500, plaid_category: 'TRANSFER_OUT' })
+    expect(autoMatch(out, {}, [], categories)).toBeNull()
   })
 
   it('returns null when nothing matches', () => {

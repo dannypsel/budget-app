@@ -1,5 +1,7 @@
-// The in-app route table. Home is the Simplifi-style spending plan; the old
-// Budget/Explore/Activity/Reports pages were removed in the barebones strip.
+// The in-app route table. Home is the Simplifi-style dashboard; the old
+// Budget/Explore/Activity/Reports pages were removed in the barebones strip,
+// and the Spending Plan home was removed 2026-10-20 (its route redirects to
+// the dashboard).
 
 import { Navigate, Route } from 'react-router-dom'
 import AccountDetailPage from '@/pages/AccountDetailPage'
@@ -15,14 +17,14 @@ import RetirementPage from '@/pages/RetirementPage'
 import RewardsPage from '@/pages/RewardsPage'
 import SeparateAccountDetailPage from '@/pages/SeparateAccountDetailPage'
 import SettingsPage from '@/pages/SettingsPage'
-import SpendingPlanPage from '@/pages/SpendingPlanPage'
+import DashboardPage from '@/pages/DashboardPage'
 
 /** Children of the AppLayout route. */
 export const AppRouteTable = (
   <>
-    <Route path="/" element={<SpendingPlanPage />} />
-    {/* Spending Plan is its own sidebar entry; it renders the same home page. */}
-    <Route path="/spending-plan" element={<SpendingPlanPage />} />
+    <Route path="/" element={<DashboardPage />} />
+    {/* The Spending Plan section was removed; its old route lands on the dashboard. */}
+    <Route path="/spending-plan" element={<Navigate to="/" replace />} />
     <Route path="/accounts" element={<AccountsPage />} />
     <Route path="/accounts/separate/:id" element={<SeparateAccountDetailPage />} />
     <Route path="/accounts/:accountId" element={<AccountDetailPage />} />

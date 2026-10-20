@@ -23,7 +23,11 @@ export interface ReportGroup {
   color?: string
 }
 
-export type GroupBy = 'category' | 'merchant' | 'account'
+export type GroupBy = 'category' | 'merchant' | 'account' | 'tag'
+
+/** The money flow a report aggregates: spend = outflows (amount > 0),
+ *  income = inflows (amount < 0, grouped by magnitude). */
+export type ReportFlow = 'spend' | 'income'
 
 /** Which rows enter the report. Both default ON on the page; the page always fetches
  *  includeExcluded=true and applies these client-side so toggling is instant. */
@@ -44,38 +48,76 @@ export function applyExcludes(txns: Transaction[], opts: ReportExcludes): Transa
   })
 }
 
-/** Group SPEND by the chosen dimension, sorted desc by total.
+/** Stable group key for one transaction under the chosen grouping — shared by
+ *  the aggregators and the drill-down filters so they can never disagree. */
+export function groupKeyFor(
+  t: Transaction,
+  groupBy: GroupBy,
+  accountsById: Map<UUID, Account>,
+): { id: string; label: string; color?: string } {
+  if (groupBy === 'category') {
+    return {
+      id: t.category_id ?? '__uncategorized__',
+      label: t.categories?.name ?? 'Uncategorized',
+      color: t.categories?.color,
+    }
+  }
+  if (groupBy === 'merchant') {
+    const name = displayName(t)
+    return { id: name, label: name }
+  }
+  if (groupBy === 'tag') {
+    // PocketLens's tag dimension is the auto-classified Need/Want pair.
+    return {
+      id: t.need_want ?? '__untagged__',
+      label: t.need_want === 'need' ? 'Need' : t.need_want === 'want' ? 'Want' : 'Untagged',
+    }
+  }
+  return { id: t.account_id, label: accountsById.get(t.account_id)?.name ?? 'Unknown account' }
+}
+
+/** Group one money flow by the chosen dimension, sorted desc by total.
  *  - category → category name ("Uncategorized" fallback), keyed by category id
  *  - merchant → merchant_name ?? description ("Unknown" fallback)
  *  - account → account name from `accountsById` ("Unknown account" fallback)
+ *  - tag → Need / Want / Untagged (the classification tags)
+ *  The opposite flow never enters a group; income totals are magnitudes. */
+export function groupFlow(
+  txns: Transaction[],
+  flow: ReportFlow,
+  groupBy: GroupBy,
+  accountsById: Map<UUID, Account>,
+): ReportGroup[] {
+  const byKey = new Map<string, ReportGroup>()
+  for (const t of txns) {
+    if (flow === 'spend' ? t.amount <= 0 : t.amount >= 0) continue
+    const mag = Math.abs(t.amount)
+    const { id, label, color } = groupKeyFor(t, groupBy, accountsById)
+    const row = byKey.get(id)
+    if (row) row.total += mag
+    else byKey.set(id, { id, label, total: mag, color })
+  }
+  return [...byKey.values()].sort((a, b) => b.total - a.total)
+}
+
+/** Group SPEND by the chosen dimension, sorted desc by total.
  *  Income (amount ≤ 0) never enters a spend group. */
 export function groupSpend(
   txns: Transaction[],
   groupBy: GroupBy,
   accountsById: Map<UUID, Account>,
 ): ReportGroup[] {
-  const byKey = new Map<string, ReportGroup>()
-  for (const t of txns) {
-    if (t.amount <= 0) continue // income (or zero) — not spend
-    let id: string
-    let label: string
-    let color: string | undefined
-    if (groupBy === 'category') {
-      id = t.category_id ?? '__uncategorized__'
-      label = t.categories?.name ?? 'Uncategorized'
-      color = t.categories?.color
-    } else if (groupBy === 'merchant') {
-      id = displayName(t)
-      label = id
-    } else {
-      id = t.account_id
-      label = accountsById.get(t.account_id)?.name ?? 'Unknown account'
-    }
-    const row = byKey.get(id)
-    if (row) row.total += t.amount
-    else byKey.set(id, { id, label, total: t.amount, color })
-  }
-  return [...byKey.values()].sort((a, b) => b.total - a.total)
+  return groupFlow(txns, 'spend', groupBy, accountsById)
+}
+
+/** Group INCOME by the chosen dimension (magnitudes), sorted desc by total.
+ *  Spend (amount ≥ 0) never enters an income group. */
+export function groupIncome(
+  txns: Transaction[],
+  groupBy: GroupBy,
+  accountsById: Map<UUID, Account>,
+): ReportGroup[] {
+  return groupFlow(txns, 'income', groupBy, accountsById)
 }
 
 /** Keep the top `n` groups; fold the rest into one "Other" row. No "Other" row when

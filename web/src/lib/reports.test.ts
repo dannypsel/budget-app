@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   applyExcludes,
+  groupIncome,
   groupSpend,
   monthlyBuckets,
   perCardSpend,
@@ -122,6 +123,38 @@ describe('groupSpend', () => {
     expect(groups.map((g) => [g.label, g.total])).toEqual([
       ['Chase Sapphire', 100],
       ['Unknown account', 50],
+    ])
+  })
+})
+
+describe('groupIncome + tag grouping', () => {
+  it('groups income by merchant using magnitudes, excluding spend', () => {
+    const txns = [
+      txn({ amount: -4200, merchant_name: 'Employer' }),
+      txn({ amount: -300, merchant_name: 'Employer' }),
+      txn({ amount: -150, merchant_name: 'Interest' }),
+      txn({ amount: 60, merchant_name: 'Employer' }), // spend — excluded
+    ]
+    const groups = groupIncome(txns, 'merchant', accountsById)
+    expect(groups.map((g) => [g.label, g.total])).toEqual([
+      ['Employer', 4500],
+      ['Interest', 150],
+    ])
+  })
+
+  it('groups spend by Need/Want tag with an Untagged bucket', () => {
+    const txns = [
+      txn({ amount: 100, need_want: 'need' }),
+      txn({ amount: 40, need_want: 'need' }),
+      txn({ amount: 25, need_want: 'want' }),
+      txn({ amount: 10 }), // untagged
+      txn({ amount: -999, need_want: 'need' }), // income — excluded from spend
+    ]
+    const groups = groupSpend(txns, 'tag', accountsById)
+    expect(groups.map((g) => [g.id, g.label, g.total])).toEqual([
+      ['need', 'Need', 140],
+      ['want', 'Want', 25],
+      ['__untagged__', 'Untagged', 10],
     ])
   })
 })

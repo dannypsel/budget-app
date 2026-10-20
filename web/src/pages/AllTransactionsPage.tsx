@@ -10,7 +10,7 @@ import { createElement, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { ArrowUpRight, ChevronLeft, Download, Filter, RotateCcw, Search, Upload, WandSparkles, X } from 'lucide-react'
+import { ArrowUpRight, ChevronLeft, Columns3, Download, Filter, Plus, RotateCcw, Search, Upload, WandSparkles, X } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   DropdownMenu,
@@ -25,6 +25,7 @@ import { ErrorState } from '@/components/ErrorState'
 import { TransfersTab } from '@/features/transactions/TransfersTab'
 import { CategorizeReview } from '@/features/transactions/CategorizeReview'
 import { CategoryPickerDialog } from '@/components/finance/CategoryPickerDialog'
+import CreateTransactionDialog from '@/components/finance/CreateTransactionDialog'
 import CsvImportDialog from '@/components/finance/CsvImportDialog'
 import { autoCategorize } from '@/data/aiCategorize'
 import { BulkCategorizePrompt, type BulkPrompt } from '@/components/finance/BulkCategorizePrompt'
@@ -34,20 +35,23 @@ import { categoryTint, categorySeriesColor } from '@/lib/categoryColors'
 import { CountUp } from '@/lib/motion'
 import {
   useBulkCategorizeMerchant,
+  useBulkSetCategoryByIds,
   useAccounts,
   useCategories,
   useRecurringSeries,
   useSetCategory,
+  useSetReviewed,
   useSpendByCategory,
   useTransactionSearch,
   useTransactionsMonthAll,
+  useTransactionsRange,
   useUncategorized,
 } from '@/data/hooks'
 import { useDebouncedValue } from '@/hooks/use-debounce'
 import { SEARCH_LIMIT, uncategorizedSameMerchant } from '@/data/transactions'
 import { formatCurrency } from '@/lib/money'
 import { downloadCsv, transactionsToCsv } from '@/lib/exportCsv'
-import { formatMonthLabel } from '@/lib/dates'
+import { formatMonthLabel, toISODate } from '@/lib/dates'
 import { cn } from '@/lib/utils'
 import {
   displayName,
@@ -303,6 +307,67 @@ export default function AllTransactionsPage() {
       { replace: true },
     )
   }
+  // Simplifi-style date-range presets alongside the month chips: a preset
+  // switches the list to a range fetch (month chips + month sidebar hide,
+  // exactly like search mode). 'month' = the chip-driven single-month view.
+  type RangePreset = 'month' | 'last-3' | 'last-6' | 'last-12' | 'all-time'
+  const [rangePreset, setRangePreset] = useState<RangePreset>('month')
+  const inRangeMode = rangePreset !== 'month'
+  const rangeBounds = useMemo(() => {
+    const now = new Date()
+    const end = toISODate(now)
+    const firstOf = (yy: number, mm: number) => toISODate(new Date(yy, mm, 1))
+    switch (rangePreset) {
+      case 'last-3':
+        return { start: firstOf(now.getFullYear(), now.getMonth() - 2), end }
+      case 'last-6':
+        return { start: firstOf(now.getFullYear(), now.getMonth() - 5), end }
+      case 'last-12':
+        return { start: firstOf(now.getFullYear(), now.getMonth() - 11), end }
+      case 'all-time':
+        return { start: '2000-01-01', end }
+      default:
+        return { start: '', end: '' }
+    }
+  }, [rangePreset])
+  const rangeQuery = useTransactionsRange(rangeBounds.start, rangeBounds.end, {
+    enabled: inRangeMode,
+  })
+
+  // Simplifi quick filters + sort + bulk selection + column visibility.
+  type QuickFilter = 'none' | 'uncategorized' | 'unreviewed'
+  // Seedable via ?quick= so the Dashboard review widget can deep-link here.
+  const [quickFilter, setQuickFilter] = useState<QuickFilter>(() => {
+    const q = searchParams.get('quick')
+    return q === 'uncategorized' || q === 'unreviewed' ? q : 'none'
+  })
+  type SortKey = 'date-desc' | 'date-asc' | 'amount-desc' | 'amount-asc' | 'payee'
+  const [sortKey, setSortKey] = useState<SortKey>('date-desc')
+  const [selectedIds, setSelectedIds] = useState<Set<UUID>>(new Set())
+  const [showAccountCol, setShowAccountCol] = useState(true)
+  const [showCategoryCol, setShowCategoryCol] = useState(true)
+  const [showTagsCol, setShowTagsCol] = useState(true)
+  const [createOpen, setCreateOpen] = useState(false)
+  const setReviewed = useSetReviewed()
+  const bulkSetCategoryByIds = useBulkSetCategoryByIds()
+
+  // /add-transaction deep-links here with ?tab=add-transaction: open the
+  // create dialog once, then clean the param so a refresh doesn't reopen it.
+  useEffect(() => {
+    if (searchParams.get('tab') === 'add-transaction') {
+      setCreateOpen(true)
+      setSearchParams(
+        (prev) => {
+          const p = new URLSearchParams(prev)
+          p.delete('tab')
+          return p
+        },
+        { replace: true },
+      )
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // Include excluded/transfer rows so linked transfers stay visible + unlinkable; they're
   // kept out of the Spent/Income totals below.
   const monthQuery = useTransactionsMonthAll(month)
@@ -368,10 +433,15 @@ export default function AllTransactionsPage() {
   const debouncedQuery = useDebouncedValue(searchText)
   const searching = searchText.trim().length > 0
   const search = useTransactionSearch(debouncedQuery)
-  const activeTxns = searching ? (search.data ?? []) : txns
-  const activeLoading = searching ? search.isPending : isLoading
-  const activeError = searching ? search.isError : monthQuery.isError
-  const retryActive = () => void (searching ? search.refetch() : monthQuery.refetch())
+  const activeTxns = searching
+    ? (search.data ?? [])
+    : inRangeMode
+      ? (rangeQuery.data ?? [])
+      : txns
+  const activeLoading = searching ? search.isPending : inRangeMode ? rangeQuery.isPending : isLoading
+  const activeError = searching ? search.isError : inRangeMode ? rangeQuery.isError : monthQuery.isError
+  const retryActive = () =>
+    void (searching ? search.refetch() : inRangeMode ? rangeQuery.refetch() : monthQuery.refetch())
 
   // Totals ignore excluded rows (transfers, manually excluded) — they net out, not spend/income.
   // Always month-scoped (the sidebar hides while searching, so no undercount is shown).
@@ -390,17 +460,50 @@ export default function AllTransactionsPage() {
   // it (raw pre-filter count) so the truncation isn't silent.
   const searchTruncated = searching && (search.data?.length ?? 0) >= SEARCH_LIMIT
 
-  // Text matching is server-side; here we only apply the category/hidden filters
-  // over the active set (month rows, or search results while searching).
+  // Text matching is server-side; here we only apply the category/hidden/quick
+  // filters over the active set (month rows, range rows, or search results),
+  // then the chosen sort. Default order is the fetch order (date desc).
   const filtered = useMemo(() => {
-    return activeTxns.filter((t) => {
+    const rows = activeTxns.filter((t) => {
       if (hiddenOnly && !t.hidden) return false
       if (filterIds.size > 0 && !(t.category_id && filterIds.has(t.category_id))) return false
       if (needWantFilter && t.need_want !== needWantFilter) return false
       if (spendPatternFilter && t.spend_pattern !== spendPatternFilter) return false
+      if (quickFilter === 'uncategorized' && t.category_id != null) return false
+      if (quickFilter === 'unreviewed' && t.reviewed) return false
       return true
     })
-  }, [activeTxns, filterIds, hiddenOnly, needWantFilter, spendPatternFilter])
+    switch (sortKey) {
+      case 'date-asc':
+        return [...rows].reverse()
+      case 'amount-desc':
+        return [...rows].sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount))
+      case 'amount-asc':
+        return [...rows].sort((a, b) => Math.abs(a.amount) - Math.abs(b.amount))
+      case 'payee':
+        return [...rows].sort((a, b) => displayName(a).localeCompare(displayName(b)))
+      default:
+        return rows
+    }
+  }, [activeTxns, filterIds, hiddenOnly, needWantFilter, spendPatternFilter, quickFilter, sortKey])
+
+  const selectedTxns = useMemo(
+    () => filtered.filter((t) => selectedIds.has(t.id)),
+    [filtered, selectedIds],
+  )
+  const selectedTotal = useMemo(
+    () => selectedTxns.reduce((s, t) => s - t.amount, 0),
+    [selectedTxns],
+  )
+
+  function toggleSelect(t: Transaction) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(t.id)) next.delete(t.id)
+      else next.add(t.id)
+      return next
+    })
+  }
 
   // Month filter chips — most recent first, extendable via the "Earlier" button.
   const monthOptions = useMemo(() => {
@@ -448,6 +551,14 @@ export default function AllTransactionsPage() {
             Transactions
           </h1>
           <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setCreateOpen(true)}
+            className="flex items-center gap-2 rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          >
+            <Plus aria-hidden="true" className="h-4 w-4" />
+            <span className="hidden sm:inline">New</span>
+          </button>
           <button
             type="button"
             onClick={() => void runAutoCategorize()}
@@ -541,6 +652,91 @@ export default function AllTransactionsPage() {
                 ))}
               </DropdownMenuContent>
             </DropdownMenu>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  aria-label="Customize columns"
+                  className="flex items-center gap-2 card-surface border border-border px-4 py-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-surface-container-high focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                >
+                  <Columns3 aria-hidden="true" className="h-4 w-4" />
+                  <span className="hidden sm:inline">Columns</span>
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-52">
+                <DropdownMenuLabel>Show in list</DropdownMenuLabel>
+                <DropdownMenuCheckboxItem checked={showAccountCol} onCheckedChange={setShowAccountCol}>
+                  Account
+                </DropdownMenuCheckboxItem>
+                <DropdownMenuCheckboxItem checked={showCategoryCol} onCheckedChange={setShowCategoryCol}>
+                  Category
+                </DropdownMenuCheckboxItem>
+                <DropdownMenuCheckboxItem checked={showTagsCol} onCheckedChange={setShowTagsCol}>
+                  Need/Want + Fixed/Variable tags
+                </DropdownMenuCheckboxItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+
+          {/* Quick filters + date range + sort (Simplifi toolbar) */}
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setRangePreset('month')
+                setMonth(new Date())
+                setSearchText('')
+              }}
+              aria-pressed={rangePreset === 'month' && sameMonth(month, new Date()) && !searching}
+              className={filterChip(rangePreset === 'month' && sameMonth(month, new Date()) && !searching)}
+            >
+              This month
+            </button>
+            <button
+              type="button"
+              onClick={() => setQuickFilter((cur) => (cur === 'uncategorized' ? 'none' : 'uncategorized'))}
+              aria-pressed={quickFilter === 'uncategorized'}
+              className={filterChip(quickFilter === 'uncategorized')}
+            >
+              Uncategorized
+            </button>
+            <button
+              type="button"
+              onClick={() => setQuickFilter((cur) => (cur === 'unreviewed' ? 'none' : 'unreviewed'))}
+              aria-pressed={quickFilter === 'unreviewed'}
+              className={filterChip(quickFilter === 'unreviewed')}
+            >
+              Unreviewed
+            </button>
+            <label className="ml-2 flex items-center gap-2 text-sm text-muted-foreground">
+              <span className="eyebrow">Date</span>
+              <select
+                aria-label="Date range"
+                value={rangePreset}
+                onChange={(e) => setRangePreset(e.target.value as RangePreset)}
+                className="h-9 rounded-full border border-border bg-card px-3 text-sm text-foreground focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+              >
+                <option value="month">By month</option>
+                <option value="last-3">Last 3 months</option>
+                <option value="last-6">Last 6 months</option>
+                <option value="last-12">Last 12 months</option>
+                <option value="all-time">All time</option>
+              </select>
+            </label>
+            <label className="flex items-center gap-2 text-sm text-muted-foreground">
+              <span className="eyebrow">Sort</span>
+              <select
+                aria-label="Sort transactions"
+                value={sortKey}
+                onChange={(e) => setSortKey(e.target.value as SortKey)}
+                className="h-9 rounded-full border border-border bg-card px-3 text-sm text-foreground focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+              >
+                <option value="date-desc">Date (newest)</option>
+                <option value="date-asc">Date (oldest)</option>
+                <option value="amount-desc">Amount (largest)</option>
+                <option value="amount-asc">Amount (smallest)</option>
+                <option value="payee">Payee (A–Z)</option>
+              </select>
+            </label>
           </div>
 
           {/* Need/Want + Fixed/Variable tag filters */}
@@ -569,8 +765,8 @@ export default function AllTransactionsPage() {
             ))}
           </div>
 
-          {/* Month chips — hidden while searching (results span all months) */}
-          {!searching && (
+          {/* Month chips — hidden while searching or in a date-range preset */}
+          {!searching && !inRangeMode && (
             <div ref={chipRowRef} className="no-scrollbar flex gap-2 overflow-x-auto pb-1 pt-0.5">
               {monthOptions.map((m) => (
                 <button
@@ -611,6 +807,83 @@ export default function AllTransactionsPage() {
           </TabsList>
 
           <TabsContent value="transactions" className="mt-5 space-y-5">
+            {/* Bulk action bar (Simplifi selection bar) */}
+            {selectedIds.size > 0 && (
+              <div className="flex flex-wrap items-center gap-3 card-surface p-3">
+                <span className="rounded-full bg-primary px-3 py-1 text-sm font-medium text-primary-foreground tabular-nums">
+                  {selectedIds.size} selected · {formatCurrency(selectedTotal)}
+                </span>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      className="rounded-full border border-border bg-card px-4 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-surface-container-high"
+                    >
+                      Categorize
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="max-h-96 w-52 overflow-y-auto">
+                    <DropdownMenuLabel>Set category</DropdownMenuLabel>
+                    <DropdownMenuCheckboxItem
+                      checked={false}
+                      onCheckedChange={() => {
+                        bulkSetCategoryByIds.mutate({
+                          ids: [...selectedIds],
+                          categoryId: null,
+                        })
+                        setSelectedIds(new Set())
+                      }}
+                    >
+                      Uncategorized
+                    </DropdownMenuCheckboxItem>
+                    {categories.map((c) => (
+                      <DropdownMenuCheckboxItem
+                        key={c.id}
+                        checked={false}
+                        onCheckedChange={() => {
+                          bulkSetCategoryByIds.mutate({
+                            ids: [...selectedIds],
+                            categoryId: c.id,
+                          })
+                          setSelectedIds(new Set())
+                        }}
+                      >
+                        {c.name}
+                      </DropdownMenuCheckboxItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setReviewed.mutate({ ids: [...selectedIds], reviewed: true })
+                    setSelectedIds(new Set())
+                  }}
+                  className="rounded-full border border-border bg-card px-4 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-surface-container-high"
+                >
+                  Mark as reviewed
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setReviewed.mutate({ ids: [...selectedIds], reviewed: false })
+                    setSelectedIds(new Set())
+                  }}
+                  className="rounded-full border border-border bg-card px-4 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-surface-container-high"
+                >
+                  Mark as unreviewed
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedIds(new Set())}
+                  aria-label="Clear selection"
+                  className="ml-auto rounded p-1 text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  <X aria-hidden="true" className="h-4 w-4" />
+                </button>
+              </div>
+            )}
+
             {/* To Categorize banner */}
             {uncategorized.length > 0 && (
               <button
@@ -655,15 +928,24 @@ export default function AllTransactionsPage() {
                 {searching
                   ? `No matches for “${searchText.trim()}”.`
                   : activeTxns.length === 0
-                    ? 'No transactions this month.'
+                    ? inRangeMode
+                      ? 'No transactions in this range.'
+                      : 'No transactions this month.'
                     : 'No transactions match your filters.'}
               </div>
             ) : (
               <TransactionList
                 transactions={filtered}
-                accounts={accountsById}
+                accounts={showAccountCol ? accountsById : undefined}
                 onSelect={setSelected}
-                renderTags={(t) => <TransactionTagControls txn={t} />}
+                renderTags={showTagsCol ? (t) => <TransactionTagControls txn={t} /> : undefined}
+                selectedIds={selectedIds}
+                onToggleSelect={toggleSelect}
+                onToggleReviewed={(t) =>
+                  setReviewed.mutate({ ids: [t.id], reviewed: !t.reviewed })
+                }
+                showCategory={showCategoryCol}
+                flat={sortKey !== 'date-desc'}
               />
             )}
           </TabsContent>
@@ -675,10 +957,17 @@ export default function AllTransactionsPage() {
       </div>
 
       {/* Spend summary is transactions-scoped and month-scoped — hide it on the Transfers
-          tab and while searching (results span all months / are capped at 50). */}
-      {tab === 'transactions' && !searching && (
+          tab, while searching, and in a date-range preset. */}
+      {tab === 'transactions' && !searching && !inRangeMode && (
         <TransactionsSidebar month={month} spent={spent} income={income} counted={counted} />
       )}
+
+      <CreateTransactionDialog
+        open={createOpen}
+        onOpenChange={setCreateOpen}
+        accounts={accountsList}
+        categories={categories}
+      />
 
       <CategoryPickerDialog
         txn={selected}

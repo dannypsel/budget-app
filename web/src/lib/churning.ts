@@ -1,6 +1,6 @@
 // Churning-tracker math — pure functions, unit-testable without Supabase.
 
-import type { ChurnBonus, ChurnCard, ChurnCredit } from '@/types/domain'
+import type { ChurnBonus, ChurnCard, ChurnCredit, ChurnCreditFrequency } from '@/types/domain'
 import { formatCurrency } from './money'
 
 export interface BonusProgress {

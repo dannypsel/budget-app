@@ -1,10 +1,11 @@
-// Reports — Simplifi-style report picker with three reports:
-//   Spending (donut + bars + grouped detail with transaction drill-down),
-//   Spending Summary (stacked monthly chart + group×month table),
-//   Forecast (live spending-plan baseline projection, selectable like any report).
-// Trailing 12 months is the default range. Sign convention: amount > 0 =
-// spend, amount < 0 = income. Grouped breakdowns are spend-only; transfer and
-// ignored exclusions are applied client-side so toggling is instant.
+// Reports — Simplifi-style report picker. Report types mirror Simplifi's
+// gallery: Spending, Spending Summary, Income, Income Summary, Income &
+// Expense, Monthly Summary — plus PocketLens's own Forecast (live
+// spending-plan baseline projection). Reports can be saved (name + type +
+// range + grouping + filters, kept in localStorage) and reopened from the
+// home. Trailing 12 months is the default range. Sign convention: amount > 0
+// = spend, amount < 0 = income. Transfer and ignored exclusions are applied
+// client-side so toggling is instant.
 
 import { useMemo, useRef, useState } from 'react'
 import {
@@ -40,15 +41,17 @@ import {
 } from '@/data/hooks'
 import {
   applyExcludes,
+  groupFlow,
+  groupKeyFor,
   groupSpend,
   monthlyBuckets,
   topNWithOther,
   type GroupBy,
+  type ReportFlow,
   type ReportGroup,
 } from '@/lib/reports'
 import { formatCurrency } from '@/lib/money'
 import { toISODate } from '@/lib/dates'
-import { categorySeriesColor } from '@/lib/categoryColors'
 import {
   chartTooltipItemStyle,
   chartTooltipLabelStyle,
@@ -60,19 +63,39 @@ import { cn } from '@/lib/utils'
 import { displayName, type Transaction, type UUID } from '@/types/domain'
 import ForecastSection from '@/components/reports/ForecastSection'
 
-type ReportId = 'spending' | 'summary' | 'forecast'
+type ReportId =
+  | 'spending'
+  | 'summary'
+  | 'income'
+  | 'income-summary'
+  | 'income-expense'
+  | 'monthly-summary'
+  | 'forecast'
 
 // ─── date presets ─────────────────────────────────────────────────────────────
 
-type Preset = 'this-month' | 'last-month' | 'last-3' | 'last-6' | 'last-12' | 'ytd' | 'custom'
+type Preset =
+  | 'this-month'
+  | 'last-month'
+  | 'qtd'
+  | 'last-quarter'
+  | 'last-year'
+  | 'last-3'
+  | 'last-6'
+  | 'last-12'
+  | 'ytd'
+  | 'custom'
 
 const PRESETS: { value: Preset; label: string }[] = [
-  { value: 'this-month', label: 'This month' },
-  { value: 'last-month', label: 'Last month' },
-  { value: 'last-3', label: 'Last 3 months' },
-  { value: 'last-6', label: 'Last 6 months' },
-  { value: 'last-12', label: 'Last 12 months' },
+  { value: 'this-month', label: 'Month to date' },
+  { value: 'qtd', label: 'Quarter to date' },
   { value: 'ytd', label: 'Year to date' },
+  { value: 'last-month', label: 'Last month' },
+  { value: 'last-quarter', label: 'Last quarter' },
+  { value: 'last-year', label: 'Last year' },
+  { value: 'last-3', label: 'Recent 3 months' },
+  { value: 'last-6', label: 'Recent 6 months' },
+  { value: 'last-12', label: 'Recent 12 months' },
   { value: 'custom', label: 'Custom' },
 ]
 
@@ -91,6 +114,16 @@ function rangeFor(preset: Preset, now: Date, customStart: string, customEnd: str
       return { start: firstOf(y, m), end: toISODate(now) }
     case 'last-month':
       return { start: firstOf(y, m - 1), end: lastDayOf(y, m - 1) }
+    case 'qtd': {
+      const qStart = Math.floor(m / 3) * 3
+      return { start: firstOf(y, qStart), end: toISODate(now) }
+    }
+    case 'last-quarter': {
+      const qStart = Math.floor(m / 3) * 3
+      return { start: firstOf(y, qStart - 3), end: lastDayOf(y, qStart - 1) }
+    }
+    case 'last-year':
+      return { start: toISODate(new Date(y - 1, 0, 1)), end: toISODate(new Date(y - 1, 11, 31)) }
     case 'last-3':
       return { start: firstOf(y, m - 2), end: toISODate(now) }
     case 'last-6':
@@ -108,12 +141,14 @@ const GROUP_BYS: { value: GroupBy; label: string }[] = [
   { value: 'category', label: 'Category' },
   { value: 'merchant', label: 'Merchant' },
   { value: 'account', label: 'Account' },
+  { value: 'tag', label: 'Tag' },
 ]
 
 const GROUP_BY_PLURAL: Record<GroupBy, string> = {
   category: 'categories',
   merchant: 'merchants',
   account: 'accounts',
+  tag: 'tags',
 }
 
 // ─── shared filter state ─────────────────────────────────────────────────────
@@ -182,6 +217,23 @@ function useReportFilters(): FilterState {
   }
 }
 
+/** Apply a FilterState's excludes + account/category selections to a raw set. */
+function applyFilters(f: FilterState, allTxns: Transaction[]): Transaction[] {
+  let txns = applyExcludes(allTxns, {
+    excludeTransfers: f.excludeTransfers,
+    excludeIgnored: f.excludeIgnored,
+  })
+  if (f.selectedAccountIds) {
+    const set = new Set(f.selectedAccountIds)
+    txns = txns.filter((t) => set.has(t.account_id))
+  }
+  if (f.selectedCategoryIds) {
+    const set = new Set(f.selectedCategoryIds)
+    txns = txns.filter((t) => t.category_id != null && set.has(t.category_id))
+  }
+  return txns
+}
+
 /** Fetch + filter transactions for the current range and filter selections. */
 function useFilteredTransactions(f: FilterState) {
   const now = useMemo(() => new Date(), [])
@@ -191,23 +243,25 @@ function useFilteredTransactions(f: FilterState) {
   )
   const { data: allTxns = [], isLoading } = useTransactionsRange(range.start, range.end)
 
-  const filtered = useMemo(() => {
-    let txns = applyExcludes(allTxns, {
-      excludeTransfers: f.excludeTransfers,
-      excludeIgnored: f.excludeIgnored,
-    })
-    if (f.selectedAccountIds) {
-      const set = new Set(f.selectedAccountIds)
-      txns = txns.filter((t) => set.has(t.account_id))
-    }
-    if (f.selectedCategoryIds) {
-      const set = new Set(f.selectedCategoryIds)
-      txns = txns.filter((t) => t.category_id != null && set.has(t.category_id))
-    }
-    return txns
-  }, [allTxns, f.excludeTransfers, f.excludeIgnored, f.selectedAccountIds, f.selectedCategoryIds])
+  const filtered = useMemo(
+    () => applyFilters(f, allTxns),
+    [allTxns, f.excludeTransfers, f.excludeIgnored, f.selectedAccountIds, f.selectedCategoryIds], // eslint-disable-line react-hooks/exhaustive-deps
+  )
 
   return { range, filtered, isLoading }
+}
+
+/** The period immediately before [start, end], of the same length (for the
+ *  Compare view). Computed on calendar days, inclusive on both ends. */
+function priorRange(range: Range): Range {
+  const start = new Date(`${range.start}T00:00:00`)
+  const end = new Date(`${range.end}T00:00:00`)
+  const days = Math.round((end.getTime() - start.getTime()) / 86400000) + 1
+  const priorEnd = new Date(start)
+  priorEnd.setDate(priorEnd.getDate() - 1)
+  const priorStart = new Date(priorEnd)
+  priorStart.setDate(priorStart.getDate() - (days - 1))
+  return { start: toISODate(priorStart), end: toISODate(priorEnd) }
 }
 
 // ─── filter controls ─────────────────────────────────────────────────────────
@@ -403,6 +457,18 @@ function FilterBar({ f }: { f: FilterState }) {
 
 const DONUT_N = 10
 
+/** Fallback series palette for non-category groupings (merchant/account/tag),
+ *  which carry no stored color of their own. Category groups always use the
+ *  category's own stored color. */
+const GROUP_PALETTE = [
+  '#3b82f6', '#f59e0b', '#10b981', '#8b5cf6', '#ec4899', '#06b6d4',
+  '#f97316', '#84cc16', '#6366f1', '#eab308', '#14b8a6', '#a855f7',
+]
+
+function groupColorOf(g: ReportGroup, i: number): string {
+  return g.color ?? GROUP_PALETTE[i % GROUP_PALETTE.length]
+}
+
 function shortDate(iso: string): string {
   return new Date(`${iso}T00:00:00`).toLocaleDateString('en-US', {
     month: 'short',
@@ -410,14 +476,37 @@ function shortDate(iso: string): string {
   })
 }
 
-function SpendingReport({ f }: { f: FilterState }) {
-  const { filtered, isLoading } = useFilteredTransactions(f)
+function FlowReport({ f, flow }: { f: FilterState; flow: ReportFlow }) {
+  const { range, filtered, isLoading } = useFilteredTransactions(f)
   const { data: accounts = [] } = useAccountsWithBalance()
   const accountsById = useMemo(() => new Map(accounts.map((a) => [a.id, a])), [accounts])
 
   const [drill, setDrill] = useState<ReportGroup | null>(null)
   const drillScrollRef = useRef<HTMLDivElement>(null)
   useHorizontalWheel(drillScrollRef)
+
+  // Compare to the immediately-prior period of the same length (Simplifi's
+  // Compare). Same filters applied to the prior fetch.
+  const [compare, setCompare] = useState(false)
+  const prior = useMemo(() => priorRange(range), [range])
+  const { data: priorTxns = [] } = useTransactionsRange(prior.start, prior.end, {
+    enabled: compare,
+  })
+  const priorFiltered = useMemo(
+    () => (compare ? applyFilters(f, priorTxns) : []),
+    [compare, priorTxns, f.excludeTransfers, f.excludeIgnored, f.selectedAccountIds, f.selectedCategoryIds], // eslint-disable-line react-hooks/exhaustive-deps
+  )
+  const priorByGroup = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const g of groupFlow(priorFiltered, flow, f.groupBy, accountsById)) {
+      map.set(g.id, g.total)
+    }
+    return map
+  }, [priorFiltered, flow, f.groupBy, accountsById])
+  const priorFlowTotal = useMemo(
+    () => [...priorByGroup.values()].reduce((s, v) => s + v, 0),
+    [priorByGroup],
+  )
 
   const stats = useMemo(() => {
     let spend = 0
@@ -428,30 +517,30 @@ function SpendingReport({ f }: { f: FilterState }) {
     }
     return { spend, income, count: filtered.length }
   }, [filtered])
+  const flowTotal = flow === 'spend' ? stats.spend : stats.income
+  const flowLabel = flow === 'spend' ? 'expenses' : 'income'
 
   const groups = useMemo(
-    () => groupSpend(filtered, f.groupBy, accountsById),
-    [filtered, f.groupBy, accountsById],
+    () => groupFlow(filtered, flow, f.groupBy, accountsById),
+    [filtered, flow, f.groupBy, accountsById],
   )
   const topGroups = useMemo(() => topNWithOther(groups, DONUT_N), [groups])
   const maxGroup = topGroups[0]?.total ?? 0
 
   const drillTxns = useMemo<Transaction[]>(() => {
     if (!drill || drill.id === '__other__') return []
-    const list = filtered.filter((t) => {
-      if (f.groupBy === 'category') return (t.category_id ?? '__uncategorized__') === drill.id
-      if (f.groupBy === 'merchant') return displayName(t) === drill.id
-      return t.account_id === drill.id
-    })
+    const list = filtered.filter(
+      (t) => groupKeyFor(t, f.groupBy, accountsById).id === drill.id,
+    )
     return [...list].sort((a, b) => b.date.localeCompare(a.date) || b.amount - a.amount)
-  }, [drill, filtered, f.groupBy])
+  }, [drill, filtered, f.groupBy, accountsById])
 
   function exportGroupsCsv() {
     const csv = rowsToCsv(
       ['Group', 'Amount'],
       groups.map((g) => [g.label, g.total.toFixed(2)]),
     )
-    downloadCsv(`spending-${f.groupBy}-${toISODate(new Date())}.csv`, csv)
+    downloadCsv(`${flow}-${f.groupBy}-${toISODate(new Date())}.csv`, csv)
   }
 
   function exportDrillCsv() {
@@ -466,10 +555,10 @@ function SpendingReport({ f }: { f: FilterState }) {
         t.amount.toFixed(2),
       ]),
     )
-    downloadCsv(`spending-${drill.label.replace(/\s+/g, '-').toLowerCase()}.csv`, csv)
+    downloadCsv(`${flow}-${drill.label.replace(/\s+/g, '-').toLowerCase()}.csv`, csv)
   }
 
-  const groupColor = (g: ReportGroup, i: number) => g.color ?? categorySeriesColor(i)
+  const groupColor = groupColorOf
 
   return (
     <div className="flex flex-col gap-6">
@@ -479,6 +568,32 @@ function SpendingReport({ f }: { f: FilterState }) {
         <p className="py-12 text-center text-sm text-muted-foreground">Loading transactions…</p>
       ) : (
         <>
+          {/* Compare + print toolbar */}
+          <div className="flex flex-wrap items-center gap-4">
+            <label className="flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
+              <Switch checked={compare} onCheckedChange={setCompare} />
+              Compare to prior period
+            </label>
+            {compare && (
+              <span className="text-sm text-muted-foreground">
+                {flow === 'spend' ? 'Expenses' : 'Income'} {formatCurrency(flowTotal)} vs{' '}
+                {formatCurrency(priorFlowTotal)} prior (
+                {priorFlowTotal > 0
+                  ? `${flowTotal >= priorFlowTotal ? '+' : ''}${(((flowTotal - priorFlowTotal) / priorFlowTotal) * 100).toFixed(1)}%`
+                  : '—'}
+                )
+              </span>
+            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="ml-auto"
+              onClick={() => window.print()}
+            >
+              Print / PDF
+            </Button>
+          </div>
+
           {/* Summary strip */}
           <section className="grid grid-cols-3 gap-4">
             <div className="card-surface p-4">
@@ -502,7 +617,9 @@ function SpendingReport({ f }: { f: FilterState }) {
           {/* Donut + legend */}
           <section className="card-surface p-4 md:p-6">
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="eyebrow">Spending by {f.groupBy}</h2>
+              <h2 className="eyebrow">
+                {flow === 'spend' ? 'Spending' : 'Income'} by {f.groupBy}
+              </h2>
               <Button variant="ghost" size="sm" onClick={exportGroupsCsv}>
                 <Download className="mr-1.5 h-4 w-4" aria-hidden />
                 CSV
@@ -510,7 +627,7 @@ function SpendingReport({ f }: { f: FilterState }) {
             </div>
             {topGroups.length === 0 ? (
               <p className="py-8 text-center text-sm text-muted-foreground">
-                No spending in this range.
+                No {flowLabel} in this range.
               </p>
             ) : (
               <div className="grid gap-6 md:grid-cols-2">
@@ -546,7 +663,7 @@ function SpendingReport({ f }: { f: FilterState }) {
                   <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
                     <span className="eyebrow">Total</span>
                     <span className="text-xl font-bold tabular-nums">
-                      {formatCurrency(stats.spend)}
+                      {formatCurrency(flowTotal)}
                     </span>
                   </div>
                 </div>
@@ -570,6 +687,11 @@ function SpendingReport({ f }: { f: FilterState }) {
                         <span className="min-w-0 flex-1 truncate text-foreground">{g.label}</span>
                         <span className="shrink-0 tabular-nums text-muted-foreground">
                           {formatCurrency(g.total)}
+                          {compare && priorByGroup.get(g.id) != null && (
+                            <span className="ml-2 text-xs">
+                              vs {formatCurrency(priorByGroup.get(g.id) ?? 0)}
+                            </span>
+                          )}
                         </span>
                       </button>
                     </li>
@@ -687,7 +809,7 @@ function SpendingReport({ f }: { f: FilterState }) {
 
 const SUMMARY_N = 8
 
-function SpendingSummaryReport({ f }: { f: FilterState }) {
+function FlowSummaryReport({ f, flow }: { f: FilterState; flow: ReportFlow }) {
   const { range, filtered, isLoading } = useFilteredTransactions(f)
   const { data: accounts = [] } = useAccountsWithBalance()
   const accountsById = useMemo(() => new Map(accounts.map((a) => [a.id, a])), [accounts])
@@ -696,21 +818,17 @@ function SpendingSummaryReport({ f }: { f: FilterState }) {
   useHorizontalWheel(tableScrollRef)
 
   const { groups, monthCols } = useMemo(() => {
-    const groups = topNWithOther(groupSpend(filtered, f.groupBy, accountsById), SUMMARY_N)
-    const topIds = new Set(groups.filter((g) => g.id !== '__other__').map((g) => g.id))
+    const groups = topNWithOther(groupFlow(filtered, flow, f.groupBy, accountsById), SUMMARY_N)
     const hasOther = groups.some((g) => g.id === '__other__')
     const buckets = monthlyBuckets(filtered, range.start, range.end)
     const monthCols = buckets.map((b) => {
+      const bucketTotal = flow === 'spend' ? b.spend : b.income
       const perKey = new Map<string, number>()
       for (const t of filtered) {
-        if (t.date.slice(0, 7) !== b.monthKey || t.amount <= 0) continue
-        const k =
-          f.groupBy === 'category'
-            ? (t.category_id ?? '__uncategorized__')
-            : f.groupBy === 'merchant'
-              ? displayName(t)
-              : t.account_id
-        perKey.set(k, (perKey.get(k) ?? 0) + t.amount)
+        if (t.date.slice(0, 7) !== b.monthKey) continue
+        if (flow === 'spend' ? t.amount <= 0 : t.amount >= 0) continue
+        const k = groupKeyFor(t, f.groupBy, accountsById).id
+        perKey.set(k, (perKey.get(k) ?? 0) + Math.abs(t.amount))
       }
       let topSum = 0
       const cells = groups.map((g) => {
@@ -719,11 +837,11 @@ function SpendingSummaryReport({ f }: { f: FilterState }) {
         topSum += v
         return v
       })
-      if (hasOther) cells[cells.length - 1] = Math.max(0, b.spend - topSum)
-      return { label: b.label, cells, total: b.spend }
+      if (hasOther) cells[cells.length - 1] = Math.max(0, bucketTotal - topSum)
+      return { label: b.label, cells, total: bucketTotal }
     })
     return { groups, monthCols }
-  }, [filtered, f.groupBy, accountsById, range.start, range.end])
+  }, [filtered, flow, f.groupBy, accountsById, range.start, range.end])
 
   const chartData = useMemo(
     () =>
@@ -737,7 +855,7 @@ function SpendingSummaryReport({ f }: { f: FilterState }) {
     [monthCols, groups],
   )
 
-  const groupColor = (g: ReportGroup, i: number) => g.color ?? categorySeriesColor(i)
+  const groupColor = groupColorOf
 
   function exportSummaryCsv() {
     const csv = rowsToCsv(
@@ -748,7 +866,7 @@ function SpendingSummaryReport({ f }: { f: FilterState }) {
         g.total.toFixed(2),
       ]),
     )
-    downloadCsv(`spending-summary-${f.groupBy}-${toISODate(new Date())}.csv`, csv)
+    downloadCsv(`${flow}-summary-${f.groupBy}-${toISODate(new Date())}.csv`, csv)
   }
 
   return (
@@ -761,15 +879,22 @@ function SpendingSummaryReport({ f }: { f: FilterState }) {
         <>
           <section className="card-surface p-4 md:p-6">
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="eyebrow">Monthly spending by {f.groupBy}</h2>
-              <Button variant="ghost" size="sm" onClick={exportSummaryCsv}>
-                <Download className="mr-1.5 h-4 w-4" aria-hidden />
-                CSV
-              </Button>
+              <h2 className="eyebrow">
+                Monthly {flow === 'spend' ? 'spending' : 'income'} by {f.groupBy}
+              </h2>
+              <div className="flex items-center gap-1">
+                <Button variant="ghost" size="sm" onClick={() => window.print()}>
+                  Print / PDF
+                </Button>
+                <Button variant="ghost" size="sm" onClick={exportSummaryCsv}>
+                  <Download className="mr-1.5 h-4 w-4" aria-hidden />
+                  CSV
+                </Button>
+              </div>
             </div>
             {monthCols.length === 0 || groups.length === 0 ? (
               <p className="py-8 text-center text-sm text-muted-foreground">
-                No spending in this range.
+                No {flow === 'spend' ? 'spending' : 'income'} in this range.
               </p>
             ) : (
               <ResponsiveContainer width="100%" height={320}>
@@ -820,7 +945,9 @@ function SpendingSummaryReport({ f }: { f: FilterState }) {
                           ? 'Category'
                           : f.groupBy === 'merchant'
                             ? 'Merchant'
-                            : 'Account'}
+                            : f.groupBy === 'tag'
+                              ? 'Tag'
+                              : 'Account'}
                       </TableHead>
                       {monthCols.map((c) => (
                         <TableHead key={c.label} className="whitespace-nowrap text-right">
@@ -884,21 +1011,385 @@ function SpendingSummaryReport({ f }: { f: FilterState }) {
   )
 }
 
+// ─── income & expense report ──────────────────────────────────────────────────
+
+function IncomeExpenseReport({ f }: { f: FilterState }) {
+  const { range, filtered, isLoading } = useFilteredTransactions(f)
+  const buckets = useMemo(
+    () => monthlyBuckets(filtered, range.start, range.end),
+    [filtered, range.start, range.end],
+  )
+  const totals = useMemo(
+    () => ({
+      income: buckets.reduce((s, b) => s + b.income, 0),
+      spend: buckets.reduce((s, b) => s + b.spend, 0),
+    }),
+    [buckets],
+  )
+  const tableScrollRef = useRef<HTMLDivElement>(null)
+  useHorizontalWheel(tableScrollRef)
+
+  function exportCsv() {
+    const csv = rowsToCsv(
+      ['Month', 'Income', 'Expenses', 'Net'],
+      buckets.map((b) => [
+        b.label,
+        b.income.toFixed(2),
+        b.spend.toFixed(2),
+        (b.income - b.spend).toFixed(2),
+      ]),
+    )
+    downloadCsv(`income-expense-${toISODate(new Date())}.csv`, csv)
+  }
+
+  return (
+    <div className="flex flex-col gap-6">
+      <FilterBar f={f} />
+      {isLoading ? (
+        <p className="py-12 text-center text-sm text-muted-foreground">Loading transactions…</p>
+      ) : (
+        <>
+          <section className="grid grid-cols-3 gap-4">
+            <div className="card-surface p-4">
+              <p className="eyebrow">Total income</p>
+              <p className="mt-1 text-2xl font-bold tabular-nums text-money-income">
+                {formatCurrency(totals.income)}
+              </p>
+            </div>
+            <div className="card-surface p-4">
+              <p className="eyebrow">Total expenses</p>
+              <p className="mt-1 text-2xl font-bold tabular-nums text-money-expense">
+                {formatCurrency(totals.spend)}
+              </p>
+            </div>
+            <div className="card-surface p-4">
+              <p className="eyebrow">Net</p>
+              <p className="mt-1 text-2xl font-bold tabular-nums">
+                {formatCurrency(totals.income - totals.spend)}
+              </p>
+            </div>
+          </section>
+
+          <section className="card-surface p-4 md:p-6">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="eyebrow">Income vs expenses by month</h2>
+              <div className="flex items-center gap-1">
+                <Button variant="ghost" size="sm" onClick={() => window.print()}>
+                  Print / PDF
+                </Button>
+                <Button variant="ghost" size="sm" onClick={exportCsv}>
+                  <Download className="mr-1.5 h-4 w-4" aria-hidden />
+                  CSV
+                </Button>
+              </div>
+            </div>
+            {buckets.length === 0 ? (
+              <p className="py-8 text-center text-sm text-muted-foreground">
+                Nothing in this range.
+              </p>
+            ) : (
+              <ResponsiveContainer width="100%" height={320}>
+                <BarChart data={buckets} margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                  <XAxis
+                    dataKey="label"
+                    tickLine={false}
+                    axisLine={false}
+                    tick={{ fontSize: 12 }}
+                    interval="preserveStartEnd"
+                  />
+                  <YAxis
+                    tickLine={false}
+                    axisLine={false}
+                    width={72}
+                    tick={{ fontSize: 12 }}
+                    tickFormatter={(v: number) => formatCurrency(v)}
+                  />
+                  <Tooltip
+                    contentStyle={chartTooltipStyle}
+                    itemStyle={chartTooltipItemStyle}
+                    labelStyle={chartTooltipLabelStyle}
+                    formatter={(value: number, name: string) => [formatCurrency(value), name]}
+                  />
+                  <Bar dataKey="income" name="Income" fill="#10b981" />
+                  <Bar dataKey="spend" name="Expenses" fill="#f59e0b" />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </section>
+
+          {buckets.length > 0 && (
+            <section className="card-surface p-4 md:p-6">
+              <div ref={tableScrollRef} className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Month</TableHead>
+                      <TableHead className="text-right">Income</TableHead>
+                      <TableHead className="text-right">Expenses</TableHead>
+                      <TableHead className="text-right">Net</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {buckets.map((b) => (
+                      <TableRow key={b.monthKey}>
+                        <TableCell className="whitespace-nowrap font-medium">{b.label}</TableCell>
+                        <TableCell className="whitespace-nowrap text-right tabular-nums text-money-income">
+                          {formatCurrency(b.income)}
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap text-right tabular-nums text-money-expense">
+                          {formatCurrency(b.spend)}
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap text-right font-semibold tabular-nums">
+                          {formatCurrency(b.income - b.spend)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </section>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+// ─── monthly summary report ───────────────────────────────────────────────────
+
+function MonthlySummaryReport() {
+  const [month, setMonth] = useState(() => {
+    const d = new Date()
+    return new Date(d.getFullYear(), d.getMonth(), 1)
+  })
+  const start = toISODate(month)
+  const end = toISODate(new Date(month.getFullYear(), month.getMonth() + 1, 0))
+  const { data: allTxns = [], isLoading } = useTransactionsRange(start, end)
+  const { data: accounts = [] } = useAccountsWithBalance()
+  const accountsById = useMemo(() => new Map(accounts.map((a) => [a.id, a])), [accounts])
+
+  const txns = useMemo(
+    () => applyExcludes(allTxns, { excludeTransfers: true, excludeIgnored: true }),
+    [allTxns],
+  )
+  const stats = useMemo(() => {
+    let spend = 0
+    let income = 0
+    for (const t of txns) {
+      if (t.amount > 0) spend += t.amount
+      else income += -t.amount
+    }
+    return { spend, income }
+  }, [txns])
+  const topSpend = useMemo(
+    () => groupSpend(txns, 'category', accountsById).slice(0, 5),
+    [txns, accountsById],
+  )
+  const topIncome = useMemo(
+    () => groupFlow(txns, 'income', 'merchant', accountsById).slice(0, 5),
+    [txns, accountsById],
+  )
+  const largest = useMemo(
+    () => [...txns].sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount)).slice(0, 5),
+    [txns],
+  )
+  const monthLabel = month.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="flex items-center gap-3">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}
+        >
+          ← Prev
+        </Button>
+        <h2 className="text-lg font-semibold text-foreground">{monthLabel}</h2>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}
+        >
+          Next →
+        </Button>
+        <Button variant="ghost" size="sm" className="ml-auto" onClick={() => window.print()}>
+          Print / PDF
+        </Button>
+      </div>
+
+      {isLoading ? (
+        <p className="py-12 text-center text-sm text-muted-foreground">Loading transactions…</p>
+      ) : (
+        <>
+          <section className="grid grid-cols-3 gap-4">
+            <div className="card-surface p-4">
+              <p className="eyebrow">Income</p>
+              <p className="mt-1 text-2xl font-bold tabular-nums text-money-income">
+                {formatCurrency(stats.income)}
+              </p>
+            </div>
+            <div className="card-surface p-4">
+              <p className="eyebrow">Spending</p>
+              <p className="mt-1 text-2xl font-bold tabular-nums text-money-expense">
+                {formatCurrency(stats.spend)}
+              </p>
+            </div>
+            <div className="card-surface p-4">
+              <p className="eyebrow">Net saved</p>
+              <p className="mt-1 text-2xl font-bold tabular-nums">
+                {formatCurrency(stats.income - stats.spend)}
+              </p>
+            </div>
+          </section>
+
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            <section className="card-surface p-4 md:p-6">
+              <h3 className="eyebrow mb-4">Top spending categories</h3>
+              {topSpend.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No spending this month.</p>
+              ) : (
+                <ul className="space-y-2.5">
+                  {topSpend.map((g) => (
+                    <li key={g.id} className="flex items-center justify-between gap-3 text-sm">
+                      <span className="truncate text-foreground">{g.label}</span>
+                      <span className="shrink-0 tabular-nums text-muted-foreground">
+                        {formatCurrency(g.total)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+            <section className="card-surface p-4 md:p-6">
+              <h3 className="eyebrow mb-4">Top income sources</h3>
+              {topIncome.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No income this month.</p>
+              ) : (
+                <ul className="space-y-2.5">
+                  {topIncome.map((g) => (
+                    <li key={g.id} className="flex items-center justify-between gap-3 text-sm">
+                      <span className="truncate text-foreground">{g.label}</span>
+                      <span className="shrink-0 tabular-nums text-muted-foreground">
+                        {formatCurrency(g.total)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          </div>
+
+          <section className="card-surface p-4 md:p-6">
+            <h3 className="eyebrow mb-4">Largest transactions</h3>
+            {largest.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No transactions this month.</p>
+            ) : (
+              <ul className="divide-y divide-border">
+                {largest.map((t) => (
+                  <li key={t.id} className="flex items-center gap-3 py-2.5 text-sm">
+                    <span className="w-16 shrink-0 text-muted-foreground">
+                      {shortDate(t.date)}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate font-medium text-foreground">
+                      {displayName(t)}
+                    </span>
+                    <span className="hidden shrink-0 text-muted-foreground sm:inline">
+                      {t.categories?.name ?? 'Uncategorized'}
+                    </span>
+                    <span
+                      className={cn(
+                        'shrink-0 tabular-nums',
+                        t.amount < 0 ? 'text-money-income' : 'text-foreground',
+                      )}
+                    >
+                      {t.amount < 0 ? '+' : ''}
+                      {formatCurrency(t.amount)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ─── saved reports (localStorage) ─────────────────────────────────────────────
+
+interface SavedReport {
+  id: string
+  name: string
+  report: ReportId
+  preset: Preset
+  groupBy: GroupBy
+  excludeTransfers: boolean
+  excludeIgnored: boolean
+}
+
+const SAVED_REPORTS_KEY = 'pocketlens.savedReports'
+
+function loadSavedReports(): SavedReport[] {
+  try {
+    const raw = localStorage.getItem(SAVED_REPORTS_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as SavedReport[]
+    return Array.isArray(parsed) ? parsed.filter((r) => r && r.id && r.name && r.report) : []
+  } catch {
+    return []
+  }
+}
+
+function storeSavedReports(reports: SavedReport[]) {
+  try {
+    localStorage.setItem(SAVED_REPORTS_KEY, JSON.stringify(reports))
+  } catch {
+    // Storage full/blocked — saved reports are a convenience, never fatal.
+  }
+}
+
 // ─── report picker home ───────────────────────────────────────────────────────
 
 const REPORT_CARDS: { id: ReportId; title: string; hint: string; blurb: string }[] = [
   {
     id: 'spending',
     title: 'Spending',
-    hint: 'Default: last 12 months',
+    hint: 'See where your money goes',
     blurb:
-      'Where your money goes — donut, top groups, and transaction drill-down by category, merchant, or account.',
+      'Donut, top groups, and transaction drill-down by category, merchant, account, or tag — with prior-period compare.',
   },
   {
     id: 'summary',
     title: 'Spending Summary',
-    hint: 'Default: last 12 months',
-    blurb: 'Spending over time — stacked monthly chart and a group-by-month table.',
+    hint: 'View your spending over time',
+    blurb: 'Stacked monthly chart and a group-by-month table.',
+  },
+  {
+    id: 'income',
+    title: 'Income',
+    hint: 'Track your sources of income',
+    blurb: 'Income grouped by category, merchant, account, or tag, with drill-down.',
+  },
+  {
+    id: 'income-summary',
+    title: 'Income Summary',
+    hint: 'View your income over time',
+    blurb: 'Stacked monthly income chart and a group-by-month table.',
+  },
+  {
+    id: 'income-expense',
+    title: 'Income & Expense',
+    hint: 'Compare income and expenses',
+    blurb: 'Monthly income vs expenses with a net column, month by month.',
+  },
+  {
+    id: 'monthly-summary',
+    title: 'Monthly Summary',
+    hint: 'A snapshot of one month',
+    blurb: 'Income, spending, net, top categories and sources, and largest transactions for a month.',
   },
   {
     id: 'forecast',
@@ -909,20 +1400,79 @@ const REPORT_CARDS: { id: ReportId; title: string; hint: string; blurb: string }
   },
 ]
 
-function ReportsHome({ onSelect }: { onSelect: (id: ReportId) => void }) {
+function ReportsHome({
+  onSelect,
+  saved,
+  onOpenSaved,
+  onDeleteSaved,
+}: {
+  onSelect: (id: ReportId) => void
+  saved: SavedReport[]
+  onOpenSaved: (r: SavedReport) => void
+  onDeleteSaved: (id: string) => void
+}) {
+  const [query, setQuery] = useState('')
+  const cards = REPORT_CARDS.filter((r) =>
+    r.title.toLowerCase().includes(query.trim().toLowerCase()),
+  )
   return (
     <div>
-      <p className="mb-6 text-sm text-muted-foreground">
-        Pick a report to open it. Spending reports default to the trailing 12 months.
-      </p>
+      <div className="mb-6 flex flex-wrap items-center gap-3">
+        <p className="text-sm text-muted-foreground">
+          Pick a report to open it. Reports default to the trailing 12 months.
+        </p>
+        <Input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search reports"
+          aria-label="Search reports"
+          className="ml-auto w-56"
+        />
+      </div>
+
+      {saved.length > 0 && (
+        <section className="mb-8">
+          <h2 className="eyebrow mb-3">Saved reports</h2>
+          <ul className="divide-y divide-border card-surface px-4">
+            {saved.map((r) => (
+              <li key={r.id} className="flex items-center gap-3 py-3">
+                <button
+                  type="button"
+                  onClick={() => onOpenSaved(r)}
+                  className="min-w-0 flex-1 text-left"
+                >
+                  <span className="block truncate text-sm font-medium text-foreground hover:underline">
+                    {r.name}
+                  </span>
+                  <span className="block text-xs text-muted-foreground">
+                    {REPORT_TITLES[r.report]} · {PRESETS.find((p) => p.value === r.preset)?.label ?? r.preset}
+                  </span>
+                </button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onDeleteSaved(r.id)}
+                  aria-label={`Delete saved report ${r.name}`}
+                >
+                  Delete
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {REPORT_CARDS.map((r) => (
+        {cards.map((r) => (
           <button key={r.id} type="button" onClick={() => onSelect(r.id)} className="report-card">
             <h3 className="text-base font-semibold text-foreground">{r.title}</h3>
             <p className="mt-0.5 text-xs text-muted-foreground">{r.hint}</p>
             <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{r.blurb}</p>
           </button>
         ))}
+        {cards.length === 0 && (
+          <p className="text-sm text-muted-foreground">No reports match “{query}”.</p>
+        )}
       </div>
     </div>
   )
@@ -933,14 +1483,64 @@ function ReportsHome({ onSelect }: { onSelect: (id: ReportId) => void }) {
 const REPORT_TITLES: Record<ReportId, string> = {
   spending: 'Spending',
   summary: 'Spending Summary',
+  income: 'Income',
+  'income-summary': 'Income Summary',
+  'income-expense': 'Income & Expense',
+  'monthly-summary': 'Monthly Summary',
   forecast: 'Forecast',
 }
 
+/** Reports that honor the shared FilterState (all but Monthly Summary, which
+ *  has its own month picker, and Forecast). */
+const FILTERED_REPORTS: ReportId[] = [
+  'spending',
+  'summary',
+  'income',
+  'income-summary',
+  'income-expense',
+]
+
 export default function ReportsPage() {
   const [active, setActive] = useState<ReportId | null>(null)
-  // One shared filter state per report so switching back preserves the view.
-  const spendingFilters = useReportFilters()
-  const summaryFilters = useReportFilters()
+  // One shared filter state so switching reports keeps the chosen view.
+  const filters = useReportFilters()
+  const [saved, setSaved] = useState<SavedReport[]>(() => loadSavedReports())
+
+  function openSaved(r: SavedReport) {
+    filters.setPreset(r.preset)
+    filters.setGroupBy(r.groupBy)
+    filters.setExcludeTransfers(r.excludeTransfers)
+    filters.setExcludeIgnored(r.excludeIgnored)
+    setActive(r.report)
+  }
+
+  function deleteSaved(id: string) {
+    setSaved((prev) => {
+      const next = prev.filter((r) => r.id !== id)
+      storeSavedReports(next)
+      return next
+    })
+  }
+
+  function saveCurrent() {
+    if (!active) return
+    const name = window.prompt('Name this report:', REPORT_TITLES[active])
+    if (!name || !name.trim()) return
+    const entry: SavedReport = {
+      id: `sr-${Date.now().toString(36)}`,
+      name: name.trim(),
+      report: active,
+      preset: filters.preset,
+      groupBy: filters.groupBy,
+      excludeTransfers: filters.excludeTransfers,
+      excludeIgnored: filters.excludeIgnored,
+    }
+    setSaved((prev) => {
+      const next = [...prev, entry]
+      storeSavedReports(next)
+      return next
+    })
+  }
 
   return (
     <div className="flex flex-col gap-6 pt-4 md:pt-8">
@@ -954,11 +1554,27 @@ export default function ReportsPage() {
         <h1 className="text-2xl font-semibold tracking-tight text-foreground">
           {active ? REPORT_TITLES[active] : 'Reports'}
         </h1>
+        {active && FILTERED_REPORTS.includes(active) && (
+          <Button variant="outline" size="sm" className="ml-auto" onClick={saveCurrent}>
+            Save report
+          </Button>
+        )}
       </div>
 
-      {active === null && <ReportsHome onSelect={setActive} />}
-      {active === 'spending' && <SpendingReport f={spendingFilters} />}
-      {active === 'summary' && <SpendingSummaryReport f={summaryFilters} />}
+      {active === null && (
+        <ReportsHome
+          onSelect={setActive}
+          saved={saved}
+          onOpenSaved={openSaved}
+          onDeleteSaved={deleteSaved}
+        />
+      )}
+      {active === 'spending' && <FlowReport f={filters} flow="spend" />}
+      {active === 'summary' && <FlowSummaryReport f={filters} flow="spend" />}
+      {active === 'income' && <FlowReport f={filters} flow="income" />}
+      {active === 'income-summary' && <FlowSummaryReport f={filters} flow="income" />}
+      {active === 'income-expense' && <IncomeExpenseReport f={filters} />}
+      {active === 'monthly-summary' && <MonthlySummaryReport />}
       {active === 'forecast' && <ForecastSection />}
     </div>
   )

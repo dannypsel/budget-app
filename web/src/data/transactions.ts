@@ -220,6 +220,66 @@ export async function setExcludeFromTotals(
   if (error) throw error
 }
 
+/** Mark/unmark rows reviewed (Simplifi's Reviewed check — separate from
+ *  categorized and from Pending/Cleared). Chunked bulk update by id. */
+export async function setReviewed(ids: UUID[], reviewed: boolean): Promise<void> {
+  const CHUNK = 500
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const { error } = await supabase
+      .from('transactions')
+      .update({ reviewed })
+      .in('id', ids.slice(i, i + CHUNK))
+    if (error) throw error
+  }
+}
+
+/** Set one category on many rows by id (bulk bar action). No merchant-memory
+ *  learning — bulk application isn't a per-merchant teaching signal. */
+export async function bulkSetCategoryByIds(ids: UUID[], categoryId: UUID | null): Promise<void> {
+  const CHUNK = 500
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const { error } = await supabase
+      .from('transactions')
+      .update({ category_id: categoryId })
+      .in('id', ids.slice(i, i + CHUNK))
+    if (error) throw error
+  }
+}
+
+/** One manually-created transaction (the "+ New" flow). `amount` is already in
+ *  DB convention (positive = spend, negative = income); the caller converts
+ *  from its spend/income toggle. The synthetic plaid id keeps the row
+ *  collision-free and marks its provenance as manual. */
+export interface ManualTransactionInput {
+  accountId: UUID
+  date: string // yyyy-MM-dd
+  amount: number
+  merchant: string
+  categoryId?: UUID | null
+  pending?: boolean
+  notes?: string | null
+}
+
+export async function createManualTransaction(input: ManualTransactionInput): Promise<void> {
+  const slug = input.merchant
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40)
+  const { error } = await supabase.from('transactions').insert({
+    plaid_transaction_id: `manual:${input.accountId}:${input.date}:${Math.round(input.amount * 100)}:${slug}:${Date.now()}`,
+    account_id: input.accountId,
+    date: input.date,
+    amount: input.amount,
+    merchant_name: input.merchant || null,
+    description: input.merchant || null,
+    category_id: input.categoryId ?? null,
+    pending: input.pending ?? false,
+    notes: input.notes ?? null,
+  })
+  if (error) throw error
+}
+
 /** Set a category WITHOUT learning (bulk/auto application). */
 export async function updateCategory(
   transactionId: UUID,

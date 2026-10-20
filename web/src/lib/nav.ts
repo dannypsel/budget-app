@@ -1,6 +1,6 @@
 // The single nav config for the whole app: the Simplifi-style sidebar.
-// Dashboard and Spending Plan intentionally land on the same home page (the
-// spending plan IS this app's dashboard); each entry keeps its own highlight.
+// (The Spending Plan entry was removed 2026-10-20 at Daniel's direction;
+// Budgets is the forward-looking planning surface.)
 
 import {
   BarChart3,
@@ -8,7 +8,6 @@ import {
   Gift,
   Landmark,
   LayoutDashboard,
-  PiggyBank,
   ReceiptText,
   Settings,
   TrendingUp,
@@ -23,7 +22,6 @@ export const sidebarNav: NavItem[] = [
   { label: "Dashboard", to: "/", icon: LayoutDashboard },
   { label: "Transactions", to: "/transactions", icon: ReceiptText },
   { label: "Accounts", to: "/accounts", icon: Landmark },
-  { label: "Spending Plan", to: "/spending-plan", icon: PiggyBank },
   { label: "Budgets", to: "/budgets", icon: Wallet },
   { label: "Churning", to: "/churning", icon: CreditCard },
   { label: "Rewards", to: "/rewards", icon: Gift },
