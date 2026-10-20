@@ -34,6 +34,9 @@ export interface RetirementYear {
   totalEnd: number
   /** End balance expressed in today's dollars. */
   totalEndToday: number
+  /** Cumulative inflation divisor for this year: nominal ÷ inflFactor =
+   *  today's dollars. 1 when inflation is 0. */
+  inflFactor: number
   /** End balance after haircutting Traditional balances by the expected
    *  retirement tax rate — the spendable (after-tax) figure. */
   afterTaxTotalEnd: number
@@ -288,6 +291,7 @@ export function projectRetirement(
       totalStart,
       totalEnd,
       totalEndToday: infl > 0 ? totalEnd / infl : totalEnd,
+      inflFactor: infl,
       afterTaxTotalEnd,
       afterTaxTotalEndToday: infl > 0 ? afterTaxTotalEnd / infl : afterTaxTotalEnd,
       withdrawals,

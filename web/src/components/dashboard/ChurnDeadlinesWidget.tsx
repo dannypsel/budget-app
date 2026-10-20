@@ -18,7 +18,7 @@ export default function ChurnDeadlinesWidget() {
   )
 
   return (
-    <section className="card-surface p-6">
+    <section className="card-surface p-4 md:p-6">
       <div className="mb-4 flex items-center justify-between">
         <h3 className="text-xl font-medium leading-7 text-foreground">Card deadlines</h3>
         <Link to="/churning" className="text-sm font-semibold text-primary hover:underline">

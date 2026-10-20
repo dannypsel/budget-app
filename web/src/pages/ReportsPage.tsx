@@ -595,7 +595,7 @@ function FlowReport({ f, flow }: { f: FilterState; flow: ReportFlow }) {
           </div>
 
           {/* Summary strip */}
-          <section className="grid grid-cols-3 gap-4">
+          <section className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <div className="card-surface p-4">
               <p className="eyebrow">Total spend</p>
               <p className="mt-1 text-2xl font-bold tabular-nums text-money-expense">
@@ -1049,7 +1049,7 @@ function IncomeExpenseReport({ f }: { f: FilterState }) {
         <p className="py-12 text-center text-sm text-muted-foreground">Loading transactions…</p>
       ) : (
         <>
-          <section className="grid grid-cols-3 gap-4">
+          <section className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <div className="card-surface p-4">
               <p className="eyebrow">Total income</p>
               <p className="mt-1 text-2xl font-bold tabular-nums text-money-income">
@@ -1198,7 +1198,7 @@ function MonthlySummaryReport() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <Button
           variant="outline"
           size="sm"
@@ -1223,7 +1223,7 @@ function MonthlySummaryReport() {
         <p className="py-12 text-center text-sm text-muted-foreground">Loading transactions…</p>
       ) : (
         <>
-          <section className="grid grid-cols-3 gap-4">
+          <section className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <div className="card-surface p-4">
               <p className="eyebrow">Income</p>
               <p className="mt-1 text-2xl font-bold tabular-nums text-money-income">

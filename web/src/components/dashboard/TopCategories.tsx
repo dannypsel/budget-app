@@ -22,7 +22,7 @@ export default function TopCategories() {
   const monthLabel = today.toLocaleDateString(undefined, { month: 'long' })
 
   return (
-    <section className="card-surface p-6">
+    <section className="card-surface p-4 md:p-6">
       <div className="mb-4 flex items-center justify-between">
         <h2 className="text-xl font-medium leading-7 text-foreground">
           Top categories · {monthLabel}

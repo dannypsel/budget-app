@@ -20,7 +20,7 @@ export default function RecentTransactions() {
   const rows = useMemo(() => recent.slice(0, 10), [recent])
 
   return (
-    <section className="card-surface p-6">
+    <section className="card-surface p-4 md:p-6">
       <div className="mb-4 flex items-center justify-between">
         <h2 className="text-xl font-medium leading-7 text-foreground">Recent transactions</h2>
         <Link to="/transactions" className="text-sm font-semibold text-primary hover:underline">

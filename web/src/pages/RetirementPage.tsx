@@ -11,6 +11,7 @@ import {
   CartesianGrid,
   ComposedChart,
   Line,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -74,6 +75,7 @@ const TAX_TREATMENTS: Array<{ value: RetirementTaxTreatment; label: string }> = 
 export default function RetirementPage() {
   const [inputs, setInputs] = useState<RetirementInputs>(() => defaultRetirementInputs())
   const [selectedYear, setSelectedYear] = useState<number | null>(null)
+  const [todayDollars, setTodayDollars] = useState(false)
   const [scenarioName, setScenarioName] = useState('')
   const [compareA, setCompareA] = useState('')
   const [compareB, setCompareB] = useState('')
@@ -249,30 +251,22 @@ export default function RetirementPage() {
                     <Label>Name</Label>
                     <Input value={a.name} onChange={(e) => patchAccount(a.id, { name: e.target.value })} />
                   </div>
-                  <div className="space-y-1.5">
-                    <Label>Balance ($)</Label>
-                    <Input
-                      type="number"
-                      inputMode="decimal"
-                      value={a.balance}
-                      onChange={(e) => {
-                        const n = Number(e.target.value)
-                        if (Number.isFinite(n)) patchAccount(a.id, { balance: n })
-                      }}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label>Annual contribution ($)</Label>
-                    <Input
-                      type="number"
-                      inputMode="decimal"
-                      value={a.annualContribution}
-                      onChange={(e) => {
-                        const n = Number(e.target.value)
-                        if (Number.isFinite(n)) patchAccount(a.id, { annualContribution: n })
-                      }}
-                    />
-                  </div>
+                  <NumField
+                    label="Balance ($)"
+                    value={a.balance}
+                    min={0}
+                    max={Math.max(500000, a.balance)}
+                    step={1000}
+                    onChange={(v) => patchAccount(a.id, { balance: v })}
+                  />
+                  <NumField
+                    label="Annual contribution ($)"
+                    value={a.annualContribution}
+                    min={0}
+                    max={Math.max(60000, a.annualContribution)}
+                    step={100}
+                    onChange={(v) => patchAccount(a.id, { annualContribution: v })}
+                  />
                   <div className="space-y-1.5">
                     <Label>Tax treatment</Label>
                     <select
@@ -467,12 +461,42 @@ export default function RetirementPage() {
 
       {/* Hero chart */}
       <section className="card-surface p-4 md:p-6">
-        <h2 className="eyebrow mb-4">Projected balance by bucket — click a year for detail</h2>
+        <div className="mb-4 flex flex-wrap items-center gap-3">
+          <h2 className="eyebrow">Projected balance by bucket — click a year for detail</h2>
+          <div
+            className="ml-auto inline-flex rounded-lg border border-border p-0.5"
+            role="group"
+            aria-label="Dollars display"
+          >
+            {(
+              [
+                { key: false, label: 'Nominal' },
+                { key: true, label: "Today's $" },
+              ] as const
+            ).map((opt) => (
+              <button
+                key={opt.label}
+                type="button"
+                onClick={() => setTodayDollars(opt.key)}
+                aria-pressed={todayDollars === opt.key}
+                className={cn(
+                  'rounded-md px-2.5 py-1 text-xs font-medium',
+                  todayDollars === opt.key
+                    ? 'bg-primary text-primary-foreground'
+                    : 'text-muted-foreground hover:text-foreground',
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
         <ProjectionChart
           projection={projection}
           accounts={inputs.accounts}
           selectedYear={selectedYear}
           onSelectYear={setSelectedYear}
+          todayDollars={todayDollars}
         />
       </section>
 
@@ -481,6 +505,13 @@ export default function RetirementPage() {
 
       {/* Year detail */}
       {selected && <YearDetail year={selected} />}
+
+      {/* Year-by-year cash flow (ProjectionLab's Cash Flow view, condensed) */}
+      <YearlyTable
+        projection={projection}
+        selectedYear={selectedYear}
+        onSelectYear={setSelectedYear}
+      />
 
       {/* Compare */}
       <section className="card-surface p-4 md:p-6">
@@ -655,22 +686,31 @@ function NumField({
 function ProjectionChart({
   projection,
   onSelectYear,
+  todayDollars = false,
 }: {
   projection: RetirementProjection
   accounts?: RetirementAccountInput[]
   selectedYear: number | null
   onSelectYear: (year: number) => void
+  /** Render every value in today's dollars (ProjectionLab-style
+   *  inflation-adjusted view) instead of nominal dollars. */
+  todayDollars?: boolean
 }) {
   const data = useMemo(
     () =>
       projection.years.map((y) => {
+        const div = todayDollars && y.inflFactor > 0 ? y.inflFactor : 1
         const row: Record<string, number> = { year: y.year, age: y.age }
         for (const [bucket, totals] of bucketTotalsForYear(y)) {
-          row[bucket] = totals.balance
-          row[`${bucket}Contributions`] = totals.contributions
+          row[bucket] = totals.balance / div
+          row[`${bucket}Contributions`] = totals.contributions / div
         }
         return row
       }),
+    [projection, todayDollars],
+  )
+  const retirementYear = useMemo(
+    () => projection.years.find((y) => !y.preRetirement)?.year,
     [projection],
   )
   const presentBuckets = useMemo(
@@ -736,8 +776,94 @@ function ProjectionChart({
             fill={RETIREMENT_BUCKET_COLORS[b]}
           />
         ))}
+        {retirementYear != null && (
+          <ReferenceLine
+            x={retirementYear}
+            stroke="hsl(var(--muted-foreground))"
+            strokeDasharray="4 4"
+            label={{
+              value: 'Retirement',
+              position: 'insideTopRight',
+              fontSize: 11,
+              fill: 'hsl(var(--muted-foreground))',
+            }}
+          />
+        )}
       </BarChart>
     </ResponsiveContainer>
+  )
+}
+
+/** Every projected year in one table — the condensed equivalent of
+ *  ProjectionLab's Cash Flow view. Clicking a row selects that year above. */
+function YearlyTable({
+  projection,
+  selectedYear,
+  onSelectYear,
+}: {
+  projection: RetirementProjection
+  selectedYear: number | null
+  onSelectYear: (year: number) => void
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null)
+  useHorizontalWheel(scrollRef)
+  if (projection.years.length === 0) return null
+  return (
+    <section className="card-surface p-4 md:p-6">
+      <h2 className="eyebrow mb-4">Year by year</h2>
+      <div ref={scrollRef} className="overflow-x-auto">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Year</TableHead>
+              <TableHead className="text-right">Age</TableHead>
+              <TableHead className="text-right">Income</TableHead>
+              <TableHead className="text-right">Spending</TableHead>
+              <TableHead className="text-right">Est. tax</TableHead>
+              <TableHead className="text-right">End balance</TableHead>
+              <TableHead className="text-right">After tax (today's $)</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {projection.years.map((y) => (
+              <TableRow
+                key={y.year}
+                onClick={() => onSelectYear(y.year)}
+                className={cn(
+                  'cursor-pointer',
+                  selectedYear === y.year && 'bg-surface-container-low',
+                  y.shortfall && 'text-destructive',
+                )}
+              >
+                <TableCell className="whitespace-nowrap font-medium">
+                  {y.year}
+                  {!y.preRetirement && y.age === projection.years.find((r) => !r.preRetirement)?.age && (
+                    <span className="ml-2 text-xs text-muted-foreground">retires</span>
+                  )}
+                  {y.shortfall && <span className="ml-2 text-xs font-semibold">shortfall</span>}
+                </TableCell>
+                <TableCell className="text-right tabular-nums">{y.age}</TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {y.income > 0 ? formatCurrency(y.income) : '—'}
+                </TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {formatCurrency(y.spending)}
+                </TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {y.estimatedTax > 0 ? formatCurrency(y.estimatedTax) : '—'}
+                </TableCell>
+                <TableCell className="text-right font-semibold tabular-nums">
+                  {formatCurrency(y.totalEnd)}
+                </TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {formatCurrency(y.afterTaxTotalEndToday)}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    </section>
   )
 }
 

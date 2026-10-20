@@ -102,7 +102,7 @@ export function TransactionList({
                 >
                   <div className="flex items-stretch">
                   {selectedIds && onToggleSelect && (
-                    <label className="flex shrink-0 cursor-pointer items-center pl-4">
+                    <label className="flex shrink-0 cursor-pointer items-center pl-3 sm:pl-4">
                       <input
                         type="checkbox"
                         checked={selectedIds.has(t.id)}
@@ -114,7 +114,7 @@ export function TransactionList({
                   )}
                   <button
                     onClick={() => onSelect?.(t)}
-                    className="group flex min-w-0 flex-1 items-center gap-4 p-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+                    className="group flex min-w-0 flex-1 items-center gap-3 p-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary sm:gap-4 sm:p-4"
                   >
                   <span
                     aria-hidden="true"
@@ -124,7 +124,7 @@ export function TransactionList({
                         : undefined
                     }
                     className={cn(
-                      'flex h-12 w-12 shrink-0 items-center justify-center rounded-full',
+                      'flex h-10 w-10 shrink-0 items-center justify-center rounded-full sm:h-12 sm:w-12',
                       !tintColor &&
                         (income
                           ? 'bg-secondary-container text-on-secondary-container'
@@ -167,7 +167,7 @@ export function TransactionList({
                       </p>
                     )}
                   </div>
-                  <Amount value={t.amount} className="shrink-0 text-xl font-semibold" />
+                  <Amount value={t.amount} className="shrink-0 text-lg font-semibold sm:text-xl" />
                   </button>
                   {onToggleReviewed && (
                     <button
@@ -177,7 +177,7 @@ export function TransactionList({
                       aria-pressed={!!t.reviewed}
                       title={t.reviewed ? 'Reviewed' : 'Mark as reviewed'}
                       className={cn(
-                        'flex shrink-0 items-center pr-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
+                        'flex shrink-0 items-center pr-3 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary sm:pr-4',
                         t.reviewed ? 'text-secondary' : 'text-muted-foreground/40 hover:text-muted-foreground',
                       )}
                     >

@@ -53,7 +53,7 @@ export default function ReviewTransactions() {
   }, [last30, monthTxns])
 
   return (
-    <section className="card-surface p-6">
+    <section className="card-surface p-4 md:p-6">
       <div className="mb-4 flex items-center justify-between">
         <h2 className="text-xl font-medium leading-7 text-foreground">Review transactions</h2>
         <Link to="/transactions" className="text-sm font-semibold text-primary hover:underline">
