@@ -15,6 +15,7 @@ import { formatAmount, formatCurrency } from '@/lib/money'
 import { formatShortDate } from '@/lib/dates'
 import { summarizeTransferGroup } from '@/data/transfers'
 import { TransactionDetails } from './TransactionDetails'
+import { categoryForest, flattenForest } from '@/lib/categoryTree'
 
 export function CategoryPickerDialog({
   txn,
@@ -36,6 +37,8 @@ export function CategoryPickerDialog({
   const setExcludeFromTotals = useSetExcludeFromTotals()
   const upsertCategory = useUpsertCategory()
   const [adding, setAdding] = useState(false)
+  const [catQuery, setCatQuery] = useState('')
+  const forest = useMemo(() => categoryForest(categories.filter((c) => c.is_active !== false)), [categories])
   const [newName, setNewName] = useState('')
 
   // When the txn is already a transfer, fetch its group legs so we can render the route.
@@ -236,17 +239,49 @@ export function CategoryPickerDialog({
                 />
               </label>
             )}
+            {/* Simplifi-style tree: each top-level category with its subcategories. */}
+            <input
+              value={catQuery}
+              onChange={(e) => setCatQuery(e.target.value)}
+              placeholder="Search categories"
+              aria-label="Search categories"
+              className="w-full rounded-lg border border-border bg-card px-3 py-2 text-sm"
+            />
+            <div className="max-h-72 space-y-1 overflow-y-auto pr-1">
+              {forest.map((node) => {
+                const q = catQuery.trim().toLowerCase()
+                const kids = flattenForest(node.children)
+                const parentHit = !q || node.category.name.toLowerCase().includes(q)
+                const shownKids = q && !parentHit ? kids.filter((k) => k.category.name.toLowerCase().includes(q)) : kids
+                if (!parentHit && shownKids.length === 0) return null
+                return (
+                  <div key={node.category.id}>
+                    <button
+                      onClick={() => commitCategory(node.category.id)}
+                      className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                    >
+                      <CategoryIcon category={node.category} />
+                      <span className="text-sm font-medium">{node.category.name}</span>
+                    </button>
+                    {shownKids.length > 0 && (
+                      <div className="ml-11 flex flex-wrap gap-1.5 pb-1.5">
+                        {shownKids.map(({ category: c, depth }) => (
+                          <button
+                            key={c.id}
+                            onClick={() => commitCategory(c.id)}
+                            className="rounded-full border border-border px-2.5 py-1 text-xs transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                          >
+                            {depth > 1 ? '› ' : ''}
+                            {c.name}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
             <div className="grid grid-cols-3 gap-3">
-              {categories.map((c) => (
-                <button
-                  key={c.id}
-                  onClick={() => commitCategory(c.id)}
-                  className="flex flex-col items-center gap-1.5 rounded-xl p-2 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                >
-                  <CategoryIcon category={c} />
-                  <span className="text-center text-xs leading-tight">{c.name}</span>
-                </button>
-              ))}
               {/* "None" clears the category — meaningless for a reimbursement (it must offset
                   one), so hide it while reimbursing. */}
               {!reimbursing && (

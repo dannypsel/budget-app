@@ -86,6 +86,22 @@ export function ManageCategoriesDialog({
     persist(next)
   }
 
+  /** The category and everything beneath it — never valid as its own parent. */
+  function descendantsOf(id: string): Set<string> {
+    const out = new Set([id])
+    let grew = true
+    while (grew) {
+      grew = false
+      for (const c of categories) {
+        if (c.parent_id && out.has(c.parent_id) && !out.has(c.id)) {
+          out.add(c.id)
+          grew = true
+        }
+      }
+    }
+    return out
+  }
+
   function save(cat: Category, patch: Partial<Category>) {
     upsert.mutate({ id: cat.id, name: cat.name, color: cat.color, icon: cat.icon, ...patch })
   }
@@ -227,6 +243,24 @@ export function ManageCategoriesDialog({
                 </button>
               </div>
               <div className="flex flex-wrap items-center gap-3 pb-1 pl-[92px] text-xs text-muted-foreground">
+                <label className="flex items-center gap-1">
+                  Parent
+                  <select
+                    aria-label={`${c.name} parent category`}
+                    value={c.parent_id ?? ''}
+                    onChange={(e) => save(c, { parent_id: e.target.value || null })}
+                    className="max-w-40 rounded border border-border bg-card px-1 py-0.5 text-xs text-foreground"
+                  >
+                    <option value="">None (top level)</option>
+                    {categories
+                      .filter((p) => !descendantsOf(c.id).has(p.id))
+                      .map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                  </select>
+                </label>
                 <label className="flex items-center gap-1">
                   Type
                   <select

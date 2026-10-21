@@ -4,6 +4,7 @@
 // the dialog receives a snapshot row that doesn't refresh after each save.
 
 import { useMemo, useRef, useState } from 'react'
+import { hierarchical } from '@/lib/categoryTree'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -234,8 +235,8 @@ function SplitEditor({ txn, onSaved, onError }: { txn: Transaction; onSaved: () 
               className="min-w-0 flex-1 rounded-md border border-border bg-card px-2 py-1 text-sm"
             >
               <option value="">Category…</option>
-              {categories.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
+              {hierarchical(categories).map(({ c, label }) => (
+                <option key={c.id} value={c.id}>{label}</option>
               ))}
             </select>
             <input

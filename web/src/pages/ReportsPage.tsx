@@ -9,6 +9,7 @@
 // toggling is instant.
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { hierarchical } from '@/lib/categoryTree'
 import {
   Bar,
   BarChart,
@@ -191,6 +192,12 @@ const GROUP_BYS: { value: GroupBy; label: string }[] = [
   { value: 'tag', label: 'Tag' },
 ]
 
+/** id → category, for rolling subcategories up to their top-level category. */
+function useCategoryMap() {
+  const { data: categories = [] } = useCategories()
+  return useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories])
+}
+
 /** The header's download button calls whatever the open report registers here. */
 type ExportRef = { current: (() => void) | null }
 
@@ -324,7 +331,7 @@ function useFilteredTransactions(f: FilterState) {
     () => rangeFor(f.preset, now, f.customStart, f.customEnd),
     [f.preset, f.customStart, f.customEnd, now],
   )
-  const { data: allTxns = [], isLoading } = useTransactionsRange(range.start, range.end)
+  const { data: allTxns = [], isLoading } = useTransactionsRange(range.start, range.end, { byPostedDate: true })
 
   const filtered = useMemo(
     () => applyFilters(f, allTxns),
@@ -423,14 +430,14 @@ function FilterBar({
               <DropdownMenuItem onSelect={(e) => { e.preventDefault(); f.setSelectedCategoryIds(null) }}>All categories</DropdownMenuItem>
               <DropdownMenuItem onSelect={(e) => { e.preventDefault(); f.setSelectedCategoryIds([]) }}>None</DropdownMenuItem>
               <DropdownMenuSeparator />
-              {categories.map((c) => (
+              {hierarchical(categories).map(({ c, label }) => (
                 <DropdownMenuCheckboxItem
                   key={c.id}
                   checked={f.selectedCategoryIds == null || f.selectedCategoryIds.includes(c.id)}
                   onCheckedChange={() => f.toggleCategory(c.id)}
                   onSelect={(e) => e.preventDefault()}
                 >
-                  {c.name}
+                  {label}
                 </DropdownMenuCheckboxItem>
               ))}
             </DropdownMenuSubContent>
@@ -490,6 +497,7 @@ function FlowReport({ f, flow, exportRef }: { f: FilterState; flow: ReportFlow; 
   const { range, filtered, isLoading } = useFilteredTransactions(f)
   const { data: accounts = [] } = useAccountsWithBalance()
   const accountsById = useMemo(() => new Map(accounts.map((a) => [a.id, a])), [accounts])
+  const categoriesById = useCategoryMap()
   const { data: categories = [] } = useCategories()
   const { data: categoryGroups = [] } = useCategoryGroups()
 
@@ -505,6 +513,7 @@ function FlowReport({ f, flow, exportRef }: { f: FilterState; flow: ReportFlow; 
   const prior = useMemo(() => priorRange(range), [range])
   const { data: priorTxns = [] } = useTransactionsRange(prior.start, prior.end, {
     enabled: compare,
+    byPostedDate: true,
   })
   const priorFiltered = useMemo(
     () => (compare ? applyFilters(f, priorTxns) : []),
@@ -512,7 +521,7 @@ function FlowReport({ f, flow, exportRef }: { f: FilterState; flow: ReportFlow; 
   )
   const priorByGroup = useMemo(() => {
     const map = new Map<string, number>()
-    for (const g of groupFlow(priorFiltered, flow, f.groupBy, accountsById)) map.set(g.id, g.total)
+    for (const g of groupFlow(priorFiltered, flow, f.groupBy, accountsById, categoriesById)) map.set(g.id, g.total)
     return map
   }, [priorFiltered, flow, f.groupBy, accountsById])
   const priorFlowTotal = useMemo(
@@ -532,8 +541,8 @@ function FlowReport({ f, flow, exportRef }: { f: FilterState; flow: ReportFlow; 
   const flowTotal = flow === 'spend' ? stats.spend : stats.income
 
   const groups = useMemo(
-    () => groupFlow(filtered, flow, f.groupBy, accountsById),
-    [filtered, flow, f.groupBy, accountsById],
+    () => groupFlow(filtered, flow, f.groupBy, accountsById, categoriesById),
+    [filtered, flow, f.groupBy, accountsById, categoriesById],
   )
   // Net credits that land in groups netting ≤ 0 (e.g. reimbursements filed under a
   // non-spend category) aren't charted but are part of the net total.
@@ -758,21 +767,22 @@ function FlowSummaryReport({ f, flow, exportRef }: { f: FilterState; flow: Repor
   const { range, filtered, isLoading } = useFilteredTransactions(f)
   const { data: accounts = [] } = useAccountsWithBalance()
   const accountsById = useMemo(() => new Map(accounts.map((a) => [a.id, a])), [accounts])
+  const categoriesById = useCategoryMap()
 
   const tableScrollRef = useRef<HTMLDivElement>(null)
   useHorizontalWheel(tableScrollRef)
 
   const { groups, monthCols } = useMemo(() => {
-    const groups = topNWithOther(groupFlow(filtered, flow, f.groupBy, accountsById), SUMMARY_N)
+    const groups = topNWithOther(groupFlow(filtered, flow, f.groupBy, accountsById, categoriesById), SUMMARY_N)
     const hasOther = groups.some((g) => g.id === '__other__')
     const buckets = monthlyBuckets(filtered, range.start, range.end)
     const monthCols = buckets.map((b) => {
       const bucketTotal = flow === 'spend' ? b.spend : b.income
       const perKey = new Map<string, number>()
       for (const t of filtered) {
-        if ((t.effective_date ?? '').slice(0, 7) !== b.monthKey) continue
+        if ((t.date ?? '').slice(0, 7) !== b.monthKey) continue
         if (reportFlow(t) !== flow) continue
-        const k = groupKeyFor(t, f.groupBy, accountsById).id
+        const k = groupKeyFor(t, f.groupBy, accountsById, categoriesById).id
         perKey.set(k, (perKey.get(k) ?? 0) + (flow === 'spend' ? t.amount : -t.amount))
       }
       let topSum = 0
@@ -1094,9 +1104,10 @@ function MonthlySummaryReport() {
   })
   const start = toISODate(month)
   const end = toISODate(new Date(month.getFullYear(), month.getMonth() + 1, 0))
-  const { data: allTxns = [], isLoading } = useTransactionsRange(start, end)
+  const { data: allTxns = [], isLoading } = useTransactionsRange(start, end, { byPostedDate: true })
   const { data: accounts = [] } = useAccountsWithBalance()
   const accountsById = useMemo(() => new Map(accounts.map((a) => [a.id, a])), [accounts])
+  const categoriesById = useCategoryMap()
 
   const txns = useMemo(
     () => applyExcludes(allTxns, { excludeTransfers: true, excludeIgnored: true }),
@@ -1112,7 +1123,7 @@ function MonthlySummaryReport() {
     return { spend, income }
   }, [txns])
   const topSpend = useMemo(
-    () => groupSpend(txns, 'category', accountsById).slice(0, 5),
+    () => groupSpend(txns, 'category', accountsById, categoriesById).slice(0, 5),
     [txns, accountsById],
   )
   const topIncome = useMemo(

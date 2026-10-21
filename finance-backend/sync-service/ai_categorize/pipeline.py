@@ -69,12 +69,32 @@ _CATEGORY_HINTS = {
     "hobby": "hobby supplies and activities",
     "transfer": "transfers between own accounts",
     "income": "money coming in: paychecks, refunds, reimbursements, payouts",
+    "personal income": "money coming in: paychecks, refunds, reimbursements, payouts",
 }
 
 
-def _category_label(name: str) -> str:
+def _category_label(name: str, path: str | None = None) -> str:
+    """'Parent › Child — hint'. The path disambiguates Simplifi-style
+    subcategories (Subscriptions › Apple vs Shopping › Electronics); the hint
+    comes from the category itself, else its top-level parent."""
+    label = path or name
     hint = _CATEGORY_HINTS.get((name or "").strip().lower())
-    return f"{name} — {hint}" if hint else name
+    if not hint and path:
+        hint = _CATEGORY_HINTS.get(path.split(" › ")[0].strip().lower())
+    return f"{label} — {hint}" if hint else label
+
+
+def _category_paths(categories: list[dict]) -> dict[str, str]:
+    by_id = {c["id"]: c for c in categories}
+    out = {}
+    for c in categories:
+        names, cur, seen = [], c, set()
+        while cur and cur["id"] not in seen:
+            seen.add(cur["id"])
+            names.insert(0, cur["name"])
+            cur = by_id.get(cur.get("parent_id"))
+        out[c["id"]] = " › ".join(names)
+    return out
 
 
 def _profile_prefs(supabase, user_id: str) -> dict:
@@ -115,7 +135,7 @@ def _active_categories(supabase, user_id: str) -> list[dict]:
     try:
         return (
             supabase.table("categories")
-            .select("id, name, kind")
+            .select("id, name, kind, parent_id")
             .eq("user_id", user_id)
             .eq("is_active", True)
             .execute()
@@ -353,7 +373,8 @@ def _run(supabase, user_id: str, stats: dict) -> dict:
     # One-line hints shown to the classifier alongside each category name.
     # Measured +2pts on a 200-transaction held-out eval (2026-10-01); the
     # verdict still comes back as the category id, so this is display-only.
-    cat_choices = [(c["id"], _category_label(c["name"])) for c in categories]
+    paths = _category_paths(categories)
+    cat_choices = [(c["id"], _category_label(c["name"], paths.get(c["id"]))) for c in categories]
     outflow_choices = [ch for ch in cat_choices if ch[0] not in income_ids]
     # Auto-classification context: category-id -> name (for the static
     # category defaults) + the merchant tag memory (overrides defaults).

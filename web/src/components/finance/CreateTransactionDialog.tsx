@@ -3,6 +3,7 @@
 // manual row (provenance `manual:` plaid id) through the data layer.
 
 import { useState } from 'react'
+import { hierarchical } from '@/lib/categoryTree'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import {
@@ -164,9 +165,9 @@ export default function CreateTransactionDialog({
               className={selectClass}
             >
               <option value="">Uncategorized</option>
-              {categories.map((c) => (
+              {hierarchical(categories).map(({ c, label }) => (
                 <option key={c.id} value={c.id}>
-                  {c.name}
+                  {label}
                 </option>
               ))}
             </select>

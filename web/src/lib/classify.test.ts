@@ -25,6 +25,11 @@ describe('flowOf (Simplifi: category type decides, never the sign)', () => {
     expect(flowOf(makeTxn({ amount: -500, plaid_category: 'TRANSFER_IN', categories: null }))).toBe('transfer')
   })
 
+  it('an unlinked, uncategorized payment out is spend even if Plaid says transfer (Simplifi)', () => {
+    // e.g. $500 Zelle to Jing Wei: Plaid TRANSFER_OUT, not one of your accounts
+    expect(flowOf(makeTxn({ amount: 500, plaid_category: 'TRANSFER_OUT', categories: null }))).toBe('spend')
+  })
+
   it('exclusions: row-level and category-level', () => {
     expect(flowOf(makeTxn({ exclude_from_totals: true, categories: groceries }))).toBe('excluded')
     expect(flowOf(makeTxn({ categories: { ...groceries, exclude_from_reports: true } }))).toBe('excluded')

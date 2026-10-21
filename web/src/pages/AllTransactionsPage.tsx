@@ -9,6 +9,7 @@
 // Mirrors PocketLens/Views/Transactions/TransactionsView.swift.
 
 import { createElement, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { hierarchical } from '@/lib/categoryTree'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { fetchAttachmentCounts } from '@/data/txnExtras'
@@ -749,7 +750,7 @@ export default function AllTransactionsPage() {
                     <DropdownMenuSub>
                       <DropdownMenuSubTrigger>Categories{filterIds.size > 0 ? ` (${filterIds.size})` : ''}</DropdownMenuSubTrigger>
                       <DropdownMenuSubContent className="max-h-80 w-60 overflow-y-auto">
-                        {categories.map((c) => (
+                        {hierarchical(categories).map(({ c, label }) => (
                           <DropdownMenuCheckboxItem
                             key={c.id}
                             checked={filterIds.has(c.id)}
@@ -763,7 +764,7 @@ export default function AllTransactionsPage() {
                               })
                             }
                           >
-                            {c.name}
+                            {label}
                           </DropdownMenuCheckboxItem>
                         ))}
                       </DropdownMenuSubContent>
@@ -861,7 +862,7 @@ export default function AllTransactionsPage() {
                       >
                         Uncategorized
                       </DropdownMenuItem>
-                      {categories.map((c) => (
+                      {hierarchical(categories).map(({ c, label }) => (
                         <DropdownMenuItem
                           key={c.id}
                           onSelect={() => {
@@ -869,7 +870,7 @@ export default function AllTransactionsPage() {
                             setSelectedIds(new Set())
                           }}
                         >
-                          {c.name}
+                          {label}
                         </DropdownMenuItem>
                       ))}
                     </DropdownMenuContent>

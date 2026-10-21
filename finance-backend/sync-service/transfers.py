@@ -113,6 +113,15 @@ def _is_self_move(row) -> bool:
         or _is_cash_category(row)
 
 
+def _is_card_charge_mislabeled_payment(row, acct_type: dict) -> bool:
+    """A card payment lands on the card as money IN (amount < 0). A positive
+    LOAN_PAYMENTS_CREDIT_CARD_PAYMENT row on a credit account is a charge Plaid
+    mislabeled (seen 2026-08 with an Amex Travel booking), never a self-move."""
+    return (row.get('plaid_category_detail') == 'LOAN_PAYMENTS_CREDIT_CARD_PAYMENT'
+            and acct_type.get(row.get('account_id')) == 'credit'
+            and float(row.get('amount') or 0) > 0)
+
+
 def _cents(amount) -> int:
     return round(abs(float(amount)) * 100)
 
@@ -255,7 +264,8 @@ def detect_transfers(supabase, user_id, lookback_days=LOOKBACK_DAYS,
                 [r for r in rows
                  if r['id'] not in used
                  and not r.get('transfer_group_id')
-                 and _is_self_move(r)]
+                 and _is_self_move(r)
+                 and not _is_card_charge_mislabeled_payment(r, acct_type)]
     for r in one_sided:
         if not dry_run:
             supabase.table('transactions').update({

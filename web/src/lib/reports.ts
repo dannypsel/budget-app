@@ -7,10 +7,12 @@
 // Transfer exclusion covers BOTH legs of a linked transfer.
 
 import { flowOf, type Flow } from '@/lib/classify'
+import { rootCategory } from '@/lib/categoryTree'
 import {
   displayName,
   isTransfer,
   type Account,
+  type Category,
   type Transaction,
   type UUID,
 } from '@/types/domain'
@@ -95,17 +97,22 @@ export function expandSplits(txns: Transaction[]): Transaction[] {
 }
 
 /** Stable group key for one transaction under the chosen grouping — shared by
- *  the aggregators and the drill-down filters so they can never disagree. */
+ *  the aggregators and the drill-down filters so they can never disagree.
+ *  With `categoriesById`, category grouping rolls subcategories up to their
+ *  top-level category (Simplifi: Restaurants and Fast Food count as Dining & Drinks). */
 export function groupKeyFor(
   t: Transaction,
   groupBy: GroupBy,
   accountsById: Map<UUID, Account>,
+  categoriesById?: Map<UUID, Category>,
 ): { id: string; label: string; color?: string } {
   if (groupBy === 'category') {
+    const own = (t.category_id && categoriesById?.get(t.category_id)) || t.categories
+    const cat = categoriesById ? rootCategory(own, categoriesById) : own
     return {
-      id: t.category_id ?? '__uncategorized__',
-      label: t.categories?.name ?? 'Uncategorized',
-      color: t.categories?.color,
+      id: cat?.id ?? '__uncategorized__',
+      label: cat?.name ?? 'Uncategorized',
+      color: cat?.color,
     }
   }
   if (groupBy === 'merchant') {
@@ -134,12 +141,13 @@ export function groupFlow(
   flow: ReportFlow,
   groupBy: GroupBy,
   accountsById: Map<UUID, Account>,
+  categoriesById?: Map<UUID, Category>,
 ): ReportGroup[] {
   const byKey = new Map<string, ReportGroup>()
   for (const t of txns) {
     if (reportFlow(t) !== flow) continue
     const amt = signedFor(t, flow)
-    const { id, label, color } = groupKeyFor(t, groupBy, accountsById)
+    const { id, label, color } = groupKeyFor(t, groupBy, accountsById, categoriesById)
     const row = byKey.get(id)
     if (row) row.total += amt
     else byKey.set(id, { id, label, total: amt, color })
@@ -153,8 +161,9 @@ export function groupSpend(
   txns: Transaction[],
   groupBy: GroupBy,
   accountsById: Map<UUID, Account>,
+  categoriesById?: Map<UUID, Category>,
 ): ReportGroup[] {
-  return groupFlow(txns, 'spend', groupBy, accountsById)
+  return groupFlow(txns, 'spend', groupBy, accountsById, categoriesById)
 }
 
 /** Group INCOME by the chosen dimension (magnitudes), sorted desc by total.
@@ -206,7 +215,8 @@ export function monthlyBuckets(
     cursor.setMonth(m + 1)
   }
   for (const t of txns) {
-    const key = (t.effective_date ?? '').slice(0, 7)
+    // Posted date, like Simplifi's reports (see fetchTransactionsRange byPostedDate).
+    const key = (t.date ?? '').slice(0, 7)
     const b = buckets.find((x) => x.monthKey === key)
     if (!b) continue
     if (reportFlow(t) === 'spend') b.spend += t.amount

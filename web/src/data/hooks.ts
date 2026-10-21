@@ -46,8 +46,8 @@ export const sbKeys = {
   merchantMemory: ['sb', 'merchantMemory'] as const,
   transactionsMonth: (iso: string) => ['sb', 'transactions', 'month', iso] as const,
   transactionsMonthAll: (iso: string) => ['sb', 'transactions', 'month-all', iso] as const,
-  transactionsRange: (start: string, end: string) =>
-    ['sb', 'transactions', 'range', start, end] as const,
+  transactionsRange: (start: string, end: string, byPostedDate = false) =>
+    ['sb', 'transactions', 'range', start, end, byPostedDate ? 'posted' : 'effective'] as const,
   spendByCategory: (iso: string) => ['sb', 'transactions', 'spendByCategory', iso] as const,
   transferGroups: (iso: string) => ['sb', 'transactions', 'transferGroups', iso] as const,
   transferGroupLegs: (groupId: UUID) => ['sb', 'transactions', 'transferGroupLegs', groupId] as const,
@@ -243,10 +243,15 @@ export function useTransactionsMonthAll(month: Date) {
 /** Transactions in an arbitrary [startISO, endISO] range (Reports page). Fetches
  *  excluded/transfer rows too — the page applies its exclude toggles client-side
  *  so toggling is instant. Nested under ['sb','transactions'] so mutations refresh it. */
-export function useTransactionsRange(startISO: string, endISO: string, opts: { enabled?: boolean } = {}) {
+export function useTransactionsRange(
+  startISO: string,
+  endISO: string,
+  opts: { enabled?: boolean; byPostedDate?: boolean } = {},
+) {
+  const byPostedDate = opts.byPostedDate ?? false
   return useQuery({
-    queryKey: sbKeys.transactionsRange(startISO, endISO),
-    queryFn: () => txns.fetchTransactionsRange(startISO, endISO, { includeExcluded: true }),
+    queryKey: sbKeys.transactionsRange(startISO, endISO, byPostedDate),
+    queryFn: () => txns.fetchTransactionsRange(startISO, endISO, { includeExcluded: true, byPostedDate }),
     enabled: (opts.enabled ?? true) && startISO !== '' && endISO !== '' && startISO <= endISO,
   })
 }

@@ -64,24 +64,23 @@ export async function fetchTransactions(
 }
 
 /** Transactions in an arbitrary [startISO, endISO] range (inclusive), filtered+ordered
- *  by effective_date. Excludes exclude_from_totals by default; pass `includeExcluded`
- *  to keep excluded/transfer rows — the Reports page fetches everything and applies
- *  its exclude toggles client-side so toggling is instant. */
+ *  by effective_date — or by the posted `date` with `byPostedDate`, which is what
+ *  Simplifi's reports bucket on (a Jul 31 authorization posted Aug 1 is August).
+ *  Excludes exclude_from_totals by default; pass `includeExcluded` to keep
+ *  excluded/transfer rows — the Reports page fetches everything and applies its
+ *  exclude toggles client-side so toggling is instant. */
 export async function fetchTransactionsRange(
   startISO: string,
   endISO: string,
-  opts: { includeExcluded?: boolean } = {},
+  opts: { includeExcluded?: boolean; byPostedDate?: boolean } = {},
 ): Promise<Transaction[]> {
   const includeExcluded = opts.includeExcluded ?? false
+  const col = opts.byPostedDate ? 'date' : 'effective_date'
   const rows = await fetchAllPages((from, to) => {
-    let q = supabase
-      .from('transactions')
-      .select(SELECT)
-      .gte('effective_date', startISO)
-      .lte('effective_date', endISO)
+    let q = supabase.from('transactions').select(SELECT).gte(col, startISO).lte(col, endISO)
     if (!includeExcluded) q = q.eq('exclude_from_totals', false)
-    // id breaks effective_date ties so pages can't skip or repeat rows
-    return q.order('effective_date', { ascending: false }).order('id').range(from, to)
+    // id breaks date ties so pages can't skip or repeat rows
+    return q.order(col, { ascending: false }).order('id').range(from, to)
   })
   return rows as unknown as Transaction[]
 }

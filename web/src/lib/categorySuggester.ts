@@ -6,27 +6,30 @@
 
 import type { Category, CategoryRule, Transaction, UUID } from '@/types/domain'
 import { merchantKey } from '@/types/domain'
+import { incomeCategory } from '@/lib/categoryTree'
 
-// Plaid PFC detailed -> our category name (finer than primary; checked first).
-const detailMap: Record<string, string> = {
-  FOOD_AND_DRINK_GROCERIES: 'Groceries',
-  FOOD_AND_DRINK_RESTAURANT: 'Dining & Drinks',
-  FOOD_AND_DRINK_FAST_FOOD: 'Dining & Drinks',
-  FOOD_AND_DRINK_COFFEE: 'Dining & Drinks',
-  FOOD_AND_DRINK_BEER_WINE_AND_LIQUOR: 'Dining & Drinks',
-  TRANSPORTATION_TAXIS_AND_RIDE_SHARES: 'Auto & Transport',
-  TRANSPORTATION_PUBLIC_TRANSIT: 'Auto & Transport',
-  TRANSPORTATION_GAS: 'Auto & Transport',
-  RENT_AND_UTILITIES_RENT: 'Rent',
+// Plaid PFC detailed -> our category names, most specific first: Simplifi's
+// subcategory, then its top-level parent for users without the subcategory
+// (finer than primary; checked first).
+const detailMap: Record<string, string[]> = {
+  FOOD_AND_DRINK_GROCERIES: ['Groceries'],
+  FOOD_AND_DRINK_RESTAURANT: ['Restaurants', 'Dining & Drinks'],
+  FOOD_AND_DRINK_FAST_FOOD: ['Fast Food', 'Dining & Drinks'],
+  FOOD_AND_DRINK_COFFEE: ['Coffee Shops', 'Dining & Drinks'],
+  FOOD_AND_DRINK_BEER_WINE_AND_LIQUOR: ['Bars', 'Dining & Drinks'],
+  TRANSPORTATION_TAXIS_AND_RIDE_SHARES: ['Rideshare', 'Auto & Transport'],
+  TRANSPORTATION_PUBLIC_TRANSIT: ['Public Transportation', 'Auto & Transport'],
+  TRANSPORTATION_GAS: ['Gas & Fuel', 'Auto & Transport'],
+  RENT_AND_UTILITIES_RENT: ['Rent', 'Home'],
 }
 
-// Plaid PFC primary -> our category name.
-const plaidMap: Record<string, string> = {
-  INCOME: 'Income',
-  FOOD_AND_DRINK: 'Dining & Drinks',
-  TRANSPORTATION: 'Auto & Transport',
-  TRAVEL: 'Travel',
-  RENT_AND_UTILITIES: 'Utilities',
+// Plaid PFC primary -> our category names (first that exists wins).
+const plaidMap: Record<string, string[]> = {
+  INCOME: ['Personal Income', 'Income'],
+  FOOD_AND_DRINK: ['Dining & Drinks'],
+  TRANSPORTATION: ['Auto & Transport'],
+  TRAVEL: ['Travel'],
+  RENT_AND_UTILITIES: ['Utilities'],
 }
 
 /** Does a conditional rule fire on this txn? ALL present conditions must pass:
@@ -90,7 +93,7 @@ export function autoMatch(
   // Income on later outflows from the same merchant — seen 2026-09 with
   // Tithe.ly, StubHub and bank transfers. (Diverges from the iOS port on
   // purpose; port the guard there too.)
-  if (id != null && txn.amount > 0 && categories.find((c) => c.id === id)?.name === 'Income')
+  if (id != null && txn.amount > 0 && categories.find((c) => c.id === id)?.kind === 'income')
     return null
   return id
 }
@@ -106,7 +109,8 @@ function autoMatchInner(
   rules: CategoryRule[],
   categories: Category[],
 ): UUID | null {
-  const byName = (n: string) => categories.find((c) => c.name === n)
+  const byName = (n: string) => categories.find((c) => c.name === n && c.is_active !== false)
+  const firstOf = (names: string[]) => names.map(byName).find((c) => c != null)
   const isTransferSignal =
     txn.plaid_category === 'TRANSFER_IN' ||
     txn.plaid_category === 'TRANSFER_OUT' ||
@@ -114,12 +118,12 @@ function autoMatchInner(
   if (!isTransferSignal) {
     const d = txn.plaid_category_detail?.toUpperCase()
     if (d && detailMap[d]) {
-      const c = byName(detailMap[d])
+      const c = firstOf(detailMap[d])
       if (c) return c.id
     }
     const p = txn.plaid_category?.toUpperCase()
     if (p && plaidMap[p]) {
-      const c = byName(plaidMap[p])
+      const c = firstOf(plaidMap[p])
       if (c) return c.id
     }
   }
@@ -134,7 +138,7 @@ function autoMatchInner(
   // Income by sign — but never for a Plaid transfer signal: a TRANSFER_IN
   // leg is money moved between accounts, not income (mirrors the backend).
   if (txn.amount < 0 && !isTransferSignal) {
-    const inc = byName('Income')
+    const inc = incomeCategory(categories)
     if (inc) return inc.id
   }
   return null

@@ -4,10 +4,11 @@
 // not the sign, and transfers are never spending.
 //
 // PocketLens sign convention: amount > 0 = outflow, amount < 0 = inflow.
-//   transfer  linked transfer leg, or Plaid PFC transfer category
+//   transfer  linked transfer leg (own-account moves, incl. one-sided legs), or an
+//             uncategorized inflow Plaid tags as a transfer
 //   excluded  user-excluded (exclude_from_totals / hidden) or a category that is
 //             excluded from reports
-//   income    inflows on an income category; uncategorized inflows (income-by-sign)
+//   income    inflows on an income category; other uncategorized inflows (income-by-sign)
 //   spend     every other row. A credit on a spend category (refund,
 //             reimbursement) is negative spend; an outflow is never income
 //             (the standing rule, commit 8286b37), even on an income category.
@@ -24,7 +25,10 @@ export function flowOf(t: Transaction, category: Category | null | undefined = t
     if (category.kind === 'income' && !t.is_reimbursement && t.amount <= 0) return 'income'
     return 'spend'
   }
-  if (isTransferCategory(t)) return 'transfer'
+  // An uncategorized payment OUT counts as spend even when Plaid calls it a
+  // transfer (Zelle/Venmo to a person) — Simplifi counts every uncategorized
+  // outflow as an expense; moves between your own accounts are linked above.
+  if (isTransferCategory(t) && t.amount < 0) return 'transfer'
   return t.amount < 0 && !t.is_reimbursement ? 'income' : 'spend'
 }
 

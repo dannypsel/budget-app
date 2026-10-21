@@ -422,3 +422,19 @@ def test_categorizer_exempts_transfer_legs_from_income():
     apply_learned(txns, ctx)
     assert txns[0].get("category_id") is None, "TRANSFER_IN is moved money, not income"
     assert txns[1]["category_id"] == "cat-income"
+
+
+def test_card_charge_mislabeled_as_payment_is_not_one_sided():
+    """A positive LOAN_PAYMENTS_CREDIT_CARD_PAYMENT row on a card is a charge
+    (an Amex Travel booking, 2026-08), not a payment — it must keep counting.
+    A real payment arriving on the card (negative) is still excluded."""
+    db = db_with(
+        txn("charge", "a-card", 1478.23, days_ago=3, pfc="LOAN_PAYMENTS",
+            plaid_category_detail="LOAN_PAYMENTS_CREDIT_CARD_PAYMENT"),
+        txn("payment", "a-card", -250.0, days_ago=3, pfc="LOAN_PAYMENTS",
+            plaid_category_detail="LOAN_PAYMENTS_CREDIT_CARD_PAYMENT"),
+    )
+    stats = detect_transfers(db, USER)
+    assert stats["one_sided"] == 1
+    assert db.one("transactions", id="charge")["transfer_group_id"] is None
+    assert db.one("transactions", id="payment")["transfer_kind"] == "one_sided"

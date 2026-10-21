@@ -231,10 +231,10 @@ describe('topNWithOther', () => {
 describe('monthlyBuckets', () => {
   it('buckets income vs spend per month across the range', () => {
     const txns = [
-      txn({ amount: 100, effective_date: '2026-07-15' }),
-      txn({ amount: -2000, effective_date: '2026-07-01' }),
-      txn({ amount: 50, effective_date: '2026-09-05' }),
-      txn({ amount: -2000, effective_date: '2026-09-30' }),
+      txn({ amount: 100, date: '2026-07-15' }),
+      txn({ amount: -2000, date: '2026-07-01' }),
+      txn({ amount: 50, date: '2026-09-05' }),
+      txn({ amount: -2000, date: '2026-09-30' }),
     ]
     const out = monthlyBuckets(txns, '2026-07-01', '2026-09-30')
     expect(out.map((b) => [b.label, b.income, b.spend])).toEqual([
@@ -244,8 +244,17 @@ describe('monthlyBuckets', () => {
     ])
   })
 
+  it('buckets by posted date, like Simplifi (authorized Jul 31, posted Aug 1 → August)', () => {
+    const t = txn({ amount: 65.7, date: '2026-08-01', authorized_date: '2026-07-31', effective_date: '2026-07-31' })
+    const out = monthlyBuckets([t], '2026-07-01', '2026-08-31')
+    expect(out.map((b) => [b.label, b.spend])).toEqual([
+      ['Jul 2026', 0],
+      ['Aug 2026', 65.7],
+    ])
+  })
+
   it('skips rows outside the endpoint months', () => {
-    const txns = [txn({ amount: 100, effective_date: '2026-06-30' })]
+    const txns = [txn({ amount: 100, date: '2026-06-30' })]
     const out = monthlyBuckets(txns, '2026-07-01', '2026-07-31')
     expect(out).toHaveLength(1)
     expect(out[0].spend).toBe(0)
@@ -308,5 +317,24 @@ describe('category-type classification (Simplifi parity)', () => {
     const rows = [txn({ amount: 40, category_id: 'c-g', categories: excludedCat })]
     expect(applyExcludes(rows, { excludeTransfers: true, excludeIgnored: true })).toEqual([])
     expect(groupSpend(applyExcludes(rows, { excludeTransfers: true, excludeIgnored: false }), 'category', new Map())[0].total).toBe(40)
+  })
+})
+
+describe('top-level roll-up (Simplifi groups subcategories under their parent)', () => {
+  const dining = { id: 'c-d', name: 'Dining & Drinks', color: '#f00', icon: '', parent_id: null, group_id: null, sort_order: 0, kind: 'spend' as const }
+  const restaurants = { ...dining, id: 'c-r', name: 'Restaurants', parent_id: 'c-d' }
+  const fastFood = { ...dining, id: 'c-f', name: 'Fast Food', parent_id: 'c-d' }
+  const byId = new Map([dining, restaurants, fastFood].map((c) => [c.id, c]))
+
+  it('sums subcategories into the top-level category when a category map is given', () => {
+    const rows = [
+      txn({ amount: 30, category_id: 'c-r', categories: restaurants }),
+      txn({ amount: 12, category_id: 'c-f', categories: fastFood }),
+      txn({ amount: 8, category_id: 'c-d', categories: dining }),
+    ]
+    expect(groupSpend(rows, 'category', new Map(), byId)).toEqual([
+      { id: 'c-d', label: 'Dining & Drinks', total: 50, color: '#f00' },
+    ])
+    expect(groupSpend(rows, 'category', new Map()).map((g) => g.label)).toEqual(['Restaurants', 'Fast Food', 'Dining & Drinks'])
   })
 })

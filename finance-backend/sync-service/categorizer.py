@@ -34,38 +34,48 @@ _VALID_SPEND_PATTERN = ("fixed", "variable")
 #: lockstep. Transfer primaries (TRANSFER_IN / TRANSFER_OUT / LOAN_PAYMENTS)
 #: are deliberately absent: transfer legs are handled by transfers.py and
 #: must never be stamped with a spend/income category here.
-PLAID_DETAIL_CATEGORY_MAP: dict[str, str] = {
-    "FOOD_AND_DRINK_GROCERIES": "Groceries",
-    "FOOD_AND_DRINK_RESTAURANT": "Dining & Drinks",
-    "FOOD_AND_DRINK_FAST_FOOD": "Dining & Drinks",
-    "FOOD_AND_DRINK_COFFEE": "Dining & Drinks",
-    "FOOD_AND_DRINK_BEER_WINE_AND_LIQUOR": "Dining & Drinks",
-    "TRANSPORTATION_TAXIS_AND_RIDE_SHARES": "Auto & Transport",
-    "TRANSPORTATION_PUBLIC_TRANSIT": "Auto & Transport",
-    "TRANSPORTATION_GAS": "Auto & Transport",
-    "RENT_AND_UTILITIES_RENT": "Rent",
+#: Values are candidate names, most specific first: Simplifi's subcategory,
+#: then its top-level parent for users who don't have the subcategory.
+PLAID_DETAIL_CATEGORY_MAP: dict[str, tuple[str, ...]] = {
+    "FOOD_AND_DRINK_GROCERIES": ("Groceries",),
+    "FOOD_AND_DRINK_RESTAURANT": ("Restaurants", "Dining & Drinks"),
+    "FOOD_AND_DRINK_FAST_FOOD": ("Fast Food", "Dining & Drinks"),
+    "FOOD_AND_DRINK_COFFEE": ("Coffee Shops", "Dining & Drinks"),
+    "FOOD_AND_DRINK_BEER_WINE_AND_LIQUOR": ("Bars", "Dining & Drinks"),
+    "TRANSPORTATION_TAXIS_AND_RIDE_SHARES": ("Rideshare", "Auto & Transport"),
+    "TRANSPORTATION_PUBLIC_TRANSIT": ("Public Transportation", "Auto & Transport"),
+    "TRANSPORTATION_GAS": ("Gas & Fuel", "Auto & Transport"),
+    "RENT_AND_UTILITIES_RENT": ("Rent", "Home"),
 }
 
-PLAID_PRIMARY_CATEGORY_MAP: dict[str, str] = {
-    "INCOME": "Income",
-    "FOOD_AND_DRINK": "Dining & Drinks",
-    "TRANSPORTATION": "Auto & Transport",
-    "TRAVEL": "Travel",
-    "RENT_AND_UTILITIES": "Utilities",
+INCOME_NAMES = ("Personal Income", "Income")
+
+PLAID_PRIMARY_CATEGORY_MAP: dict[str, tuple[str, ...]] = {
+    "INCOME": INCOME_NAMES,
+    "FOOD_AND_DRINK": ("Dining & Drinks",),
+    "TRANSPORTATION": ("Auto & Transport",),
+    "TRAVEL": ("Travel",),
+    "RENT_AND_UTILITIES": ("Utilities",),
 }
 
 
-def plaid_category_name(txn: dict) -> str | None:
-    """The PocketLens category name implied by the bank-provided Plaid PFC
-    data on this transaction (detailed first, then primary), or None when
+def plaid_category_candidates(txn: dict) -> tuple[str, ...]:
+    """Candidate PocketLens category names implied by the bank-provided Plaid
+    PFC data (detailed first, then primary), most specific first; empty when
     Plaid offered nothing mappable. Transfer signals never map."""
     if (txn.get('plaid_category') or '') in PFC_TRANSFER:
-        return None
+        return ()
     detail = (txn.get('plaid_category_detail') or '').upper()
     if detail in PLAID_DETAIL_CATEGORY_MAP:
         return PLAID_DETAIL_CATEGORY_MAP[detail]
     primary = (txn.get('plaid_category') or '').upper()
-    return PLAID_PRIMARY_CATEGORY_MAP.get(primary)
+    return PLAID_PRIMARY_CATEGORY_MAP.get(primary, ())
+
+
+def plaid_category_name(txn: dict) -> str | None:
+    """The most specific candidate name (see plaid_category_candidates)."""
+    names = plaid_category_candidates(txn)
+    return names[0] if names else None
 
 
 def _merchant_key(txn: dict) -> str:
@@ -139,10 +149,15 @@ def load_guess_context(user_id: str) -> dict:
     memory = {r['merchant_key']: r['category_id'] for r in mem_rows}
 
     cats = sb.table('categories') \
-        .select('id, name') \
+        .select('*') \
         .eq('user_id', user_id) \
         .execute().data or []
-    income_id = next((c['id'] for c in cats if c['name'] == 'Income'), None)
+    active = [c for c in cats if c.get('is_active', True) is not False]
+    top = [c for c in active if not c.get('parent_id')]
+    income_id = next(
+        (c['id'] for name in INCOME_NAMES for c in top if c['name'] == name),
+        next((c['id'] for c in top if c.get('kind') == 'income'), None),
+    )
 
     # Tag context for need_want/spend_pattern: category id -> name for the
     # static defaults, plus merchant_txn_tags memory (merchant overrides win
@@ -161,7 +176,7 @@ def load_guess_context(user_id: str) -> dict:
 
     return {'rules': rules, 'memory': memory, 'income_id': income_id,
             'cat_names': cat_names, 'tag_memory': tag_memory,
-            'cat_ids_by_name': {c['name']: c['id'] for c in cats if c.get('id')}}
+            'cat_ids_by_name': {c['name']: c['id'] for c in active if c.get('id')}}
 
 
 def fill_txn_tags(rows: list[dict], ctx: dict) -> list[dict]:
@@ -262,12 +277,13 @@ def apply_learned(transactions: list[dict], ctx: dict, acct_types: dict = None) 
         card_refund = _is_card_refund(txn, acct_types)
 
         if not txn.get('category_id'):
-            plaid_name = plaid_category_name(txn)
+            candidates = plaid_category_candidates(txn)
             # A card refund is a contra-expense, never income — don't let a
             # Plaid INCOME signal stamp it (it is flagged reimbursement below
             # and surfaces for its real expense category instead).
-            if card_refund and plaid_name == 'Income':
-                plaid_name = None
+            if card_refund and candidates == INCOME_NAMES:
+                candidates = ()
+            plaid_name = next((n for n in candidates if cat_ids_by_name.get(n)), None)
             key = _merchant_key(txn)
             if plaid_name and cat_ids_by_name.get(plaid_name):
                 txn['category_id'] = cat_ids_by_name[plaid_name]

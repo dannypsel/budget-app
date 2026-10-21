@@ -90,13 +90,16 @@ export function FlowAnalysisTab({
 
   const now = useMemo(() => new Date(), [])
   const range = useMemo(() => presetRange(preset, now), [preset, now])
-  const { data: raw = [], isLoading } = useTransactionsRange(range.start, range.end)
+  const { data: raw = [], isLoading } = useTransactionsRange(range.start, range.end, { byPostedDate: true })
 
   const rows = useMemo(
     () => applyExcludes(raw, { excludeTransfers: true, excludeIgnored: true }).filter((t) => reportFlow(t) === flow),
     [raw, flow],
   )
-  const groups = useMemo(() => groupFlow(expandSplits(rows), flow, groupBy, accountsById), [rows, flow, groupBy, accountsById])
+  const groups = useMemo(
+    () => groupFlow(expandSplits(rows), flow, groupBy, accountsById, categoriesById),
+    [rows, flow, groupBy, accountsById, categoriesById],
+  )
   const top = useMemo(
     () => topNWithOther(groups, TOP_N).map((g) => (g.id === '__other__' ? { ...g, label: 'Everything else' } : g)),
     [groups],
@@ -112,7 +115,7 @@ export function FlowAnalysisTab({
     const topIds = new Set(top.filter((g) => g.id !== '__other__').map((g) => g.id))
     return rows.filter((t) => {
       if (focus) {
-        const id = groupKeyFor(t, groupBy, accountsById).id
+        const id = groupKeyFor(t, groupBy, accountsById, categoriesById).id
         if (focus.id === '__other__' ? topIds.has(id) : id !== focus.id) return false
       }
       return matchesQuery(t, parsed, { accountsById, categoriesById })

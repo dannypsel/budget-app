@@ -80,3 +80,33 @@ def test_plaid_income_for_money_in():
     }]
     apply_learned(txns, CTX)
     assert txns[0]["category_id"] == "cat-income"
+
+
+# ── Simplifi subcategories first, top-level parent as fallback ──────────────
+
+def test_plaid_detail_prefers_simplifi_subcategory():
+    ctx = {**CTX, "cat_ids_by_name": {**CTX["cat_ids_by_name"],
+                                      "Restaurants": "cat-restaurants", "Gas & Fuel": "cat-gas"}}
+    txns = [
+        {"merchant_name": "Doordash", "description": "", "amount": 31.0,
+         "plaid_category": "FOOD_AND_DRINK", "plaid_category_detail": "FOOD_AND_DRINK_RESTAURANT"},
+        {"merchant_name": "Shell", "description": "", "amount": 40.0,
+         "plaid_category": "TRANSPORTATION", "plaid_category_detail": "TRANSPORTATION_GAS"},
+        {"merchant_name": "Blue Bottle", "description": "", "amount": 6.0,
+         "plaid_category": "FOOD_AND_DRINK", "plaid_category_detail": "FOOD_AND_DRINK_COFFEE"},
+    ]
+    apply_learned(txns, ctx)
+    assert [t["category_id"] for t in txns] == ["cat-restaurants", "cat-gas", "cat-dining"]
+
+
+def test_plaid_income_maps_to_personal_income():
+    ctx = {**CTX, "cat_ids_by_name": {"Personal Income": "cat-personal-income"}}
+    txns = [{"merchant_name": "Employer", "description": "", "amount": -3000.0,
+             "plaid_category": "INCOME", "plaid_category_detail": "INCOME_WAGES"}]
+    apply_learned(txns, ctx)
+    assert txns[0]["category_id"] == "cat-personal-income"
+
+
+def test_plaid_category_name_returns_most_specific_candidate():
+    assert plaid_category_name({"plaid_category": "FOOD_AND_DRINK",
+                                "plaid_category_detail": "FOOD_AND_DRINK_FAST_FOOD"}) == "Fast Food"

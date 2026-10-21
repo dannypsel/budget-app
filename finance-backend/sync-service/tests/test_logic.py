@@ -628,3 +628,25 @@ def test_batch_upsert_failure_falls_back_to_per_row():
     clean = FakeSupabase()
     assert sync._upsert_new_transactions(clean, rows[:1], "item-1", USER) == 1
     assert sync._upsert_new_transactions(clean, [], "item-1", USER) == 0
+
+
+def test_guess_context_finds_personal_income_and_skips_archived(monkeypatch):
+    """After the Simplifi rename the income category is "Personal Income";
+    archived categories never receive Plaid-mapped verdicts."""
+    import categorizer
+
+    db = FakeSupabase({
+        "categories": [
+            {"id": "c-pi", "user_id": USER, "name": "Personal Income", "kind": "income",
+             "parent_id": None, "is_active": True},
+            {"id": "c-rent-old", "user_id": USER, "name": "Rent", "kind": "spend",
+             "parent_id": None, "is_active": False},
+            {"id": "c-rent", "user_id": USER, "name": "Rent", "kind": "spend",
+             "parent_id": "c-home", "is_active": True},
+        ],
+        "merchant_categories": [], "category_rules": [], "merchant_txn_tags": [],
+    })
+    monkeypatch.setattr(categorizer, "get_supabase", lambda: db)
+    ctx = categorizer.load_guess_context(USER)
+    assert ctx["income_id"] == "c-pi"
+    assert ctx["cat_ids_by_name"]["Rent"] == "c-rent"
