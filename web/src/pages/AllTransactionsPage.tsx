@@ -1,16 +1,19 @@
 // Transactions — terracotta/sage layout: search + month filter chips up top, day-grouped
 // list in the main column, and (desktop) a right sidebar with the monthly spending summary
 // and Top Category cards derived from the already-fetched month of transactions.
-// Search is server-side across all months (search_transactions RPC); while a query is active
-// the month chips and the month-scoped sidebar hide (results are capped at the newest 50).
+// Plain-text search is server-side across all months (search_transactions RPC); a query with
+// Simplifi search syntax (payee:, date=, amount>, is:reviewed …, lib/searchDsl) fetches the
+// date window it implies and matches client-side. While a query is active the month chips and
+// the month-scoped sidebar hide.
 // Keeps the Transfers tab (?tab=transfers) and the "To Categorize" swipe review.
 // Mirrors PocketLens/Views/Transactions/TransactionsView.swift.
 
 import { createElement, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { fetchAttachmentCounts } from '@/data/txnExtras'
 import { toast } from 'sonner'
-import { ArrowUpRight, ChevronLeft, Columns3, Download, Filter, Plus, RotateCcw, Search, Upload, WandSparkles, X } from 'lucide-react'
+import { ArrowUpRight, ChevronLeft, ChevronRight, Columns3, Download, Filter, Plus, RotateCcw, Upload, WandSparkles, X } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   DropdownMenu,
@@ -20,6 +23,9 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { TransactionList } from '@/features/transactions/TransactionList'
+import { TransactionSearchBox } from '@/features/transactions/TransactionSearchBox'
+import { FlowAnalysisTab } from '@/features/transactions/FlowAnalysisTab'
+import { dateWindow, matchesQuery, parseQuery } from '@/lib/searchDsl'
 import { TransactionTagControls } from '@/features/transactions/TransactionTagControls'
 import { ErrorState } from '@/components/ErrorState'
 import { TransfersTab } from '@/features/transactions/TransfersTab'
@@ -27,6 +33,7 @@ import { CategorizeReview } from '@/features/transactions/CategorizeReview'
 import { CategoryPickerDialog } from '@/components/finance/CategoryPickerDialog'
 import CreateTransactionDialog from '@/components/finance/CreateTransactionDialog'
 import CsvImportDialog from '@/components/finance/CsvImportDialog'
+import AccountsOverview from '@/components/dashboard/AccountsOverview'
 import { autoCategorize } from '@/data/aiCategorize'
 import { BulkCategorizePrompt, type BulkPrompt } from '@/components/finance/BulkCategorizePrompt'
 import { ProgressBar } from '@/components/finance/ProgressBar'
@@ -276,6 +283,48 @@ function TransactionsSidebar({
   )
 }
 
+const ACCOUNTS_PANEL_KEY = 'pocketlens.txnAccountsPanel'
+
+/** Simplifi's collapsible Accounts panel beside the register (wide screens only). */
+function AccountsPanel() {
+  const [open, setOpen] = useState(() => {
+    try {
+      return localStorage.getItem(ACCOUNTS_PANEL_KEY) !== 'closed'
+    } catch {
+      return true
+    }
+  })
+  const toggle = () =>
+    setOpen((prev) => {
+      try {
+        localStorage.setItem(ACCOUNTS_PANEL_KEY, prev ? 'closed' : 'open')
+      } catch {
+        // Storage blocked — the toggle still works for this session.
+      }
+      return !prev
+    })
+  return (
+    <aside className="relative hidden shrink-0 xl:block">
+      <button
+        type="button"
+        onClick={toggle}
+        aria-label={open ? 'Collapse accounts panel' : 'Expand accounts panel'}
+        aria-expanded={open}
+        className="absolute -right-3 top-4 z-10 flex h-7 w-7 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-sm hover:text-foreground"
+      >
+        {open ? <ChevronLeft className="h-4 w-4" aria-hidden /> : <ChevronRight className="h-4 w-4" aria-hidden />}
+      </button>
+      {open ? (
+        <div className="sticky top-20 max-h-[calc(100vh-6rem)] w-[300px] overflow-y-auto">
+          <AccountsOverview compact />
+        </div>
+      ) : (
+        <div className="w-2" />
+      )}
+    </aside>
+  )
+}
+
 export default function AllTransactionsPage() {
   const [month, setMonth] = useState(() => new Date())
   const [monthsShown, setMonthsShown] = useState(12)
@@ -295,12 +344,15 @@ export default function AllTransactionsPage() {
     return () => el.removeEventListener('wheel', handler)
   }, [])
   const [searchParams, setSearchParams] = useSearchParams()
-  const tab = searchParams.get('tab') === 'transfers' ? 'transfers' : 'transactions'
+  const tabParam = searchParams.get('tab')
+  const tab =
+    tabParam === 'transfers' || tabParam === 'spending' || tabParam === 'income' ? tabParam : 'transactions'
+  const analysisTab = tab === 'spending' || tab === 'income'
   function setTab(next: string) {
     setSearchParams(
       (prev) => {
         const p = new URLSearchParams(prev)
-        if (next === 'transfers') p.set('tab', 'transfers')
+        if (next === 'transfers' || next === 'spending' || next === 'income') p.set('tab', next)
         else p.delete('tab')
         return p
       },
@@ -377,6 +429,12 @@ export default function AllTransactionsPage() {
   const { data: accountsList = [] } = useAccounts()
   const setCategory = useSetCategory()
   const bulkCategorize = useBulkCategorizeMerchant()
+  // Best-effort: before the attachments migration runs this simply has no data.
+  const { data: attachmentCounts } = useQuery({
+    queryKey: ['sb', 'attachmentCounts'],
+    queryFn: () => fetchAttachmentCounts().catch(() => new Map<UUID, number>()),
+    retry: false,
+  })
 
   // Build an id→Account map for the row-level account label.
   const accountsById = useMemo(
@@ -432,16 +490,41 @@ export default function AllTransactionsPage() {
   const [searchText, setSearchText] = useState(() => searchParams.get('q') ?? '')
   const debouncedQuery = useDebouncedValue(searchText)
   const searching = searchText.trim().length > 0
-  const search = useTransactionSearch(debouncedQuery)
-  const activeTxns = searching
-    ? (search.data ?? [])
-    : inRangeMode
-      ? (rangeQuery.data ?? [])
-      : txns
-  const activeLoading = searching ? search.isPending : inRangeMode ? rangeQuery.isPending : isLoading
-  const activeError = searching ? search.isError : inRangeMode ? rangeQuery.isError : monthQuery.isError
+  const parsedQuery = useMemo(() => parseQuery(debouncedQuery), [debouncedQuery])
+  const dslSearch = parsedQuery.constraints.length > 0
+  const dslWindow = useMemo(() => {
+    const today = toISODate(new Date())
+    const w = dateWindow(parsedQuery)
+    const lo = w && w[0] > '2000-01-01' ? w[0] : '2000-01-01'
+    const hi = w && w[1] < today ? w[1] : today
+    return { start: lo, end: hi }
+  }, [parsedQuery])
+  const dslQuery = useTransactionsRange(dslWindow.start, dslWindow.end, { enabled: dslSearch })
+  const search = useTransactionSearch(dslSearch ? '' : debouncedQuery)
+  const categoriesById = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories])
+  const dslResults = useMemo(
+    () =>
+      dslSearch
+        ? (dslQuery.data ?? []).filter((t) => matchesQuery(t, parsedQuery, { accountsById, categoriesById }))
+        : [],
+    [dslSearch, dslQuery.data, parsedQuery, accountsById, categoriesById],
+  )
+  const textQuery = dslSearch ? dslQuery : search
+  const activeTxns = useMemo(
+    () =>
+      searching
+        ? dslSearch
+          ? dslResults
+          : (search.data ?? [])
+        : inRangeMode
+          ? (rangeQuery.data ?? [])
+          : txns,
+    [searching, dslSearch, dslResults, search.data, inRangeMode, rangeQuery.data, txns],
+  )
+  const activeLoading = searching ? textQuery.isPending : inRangeMode ? rangeQuery.isPending : isLoading
+  const activeError = searching ? textQuery.isError : inRangeMode ? rangeQuery.isError : monthQuery.isError
   const retryActive = () =>
-    void (searching ? search.refetch() : inRangeMode ? rangeQuery.refetch() : monthQuery.refetch())
+    void (searching ? textQuery.refetch() : inRangeMode ? rangeQuery.refetch() : monthQuery.refetch())
 
   // Totals ignore excluded rows (transfers, manually excluded) — they net out, not spend/income.
   // Always month-scoped (the sidebar hides while searching, so no undercount is shown).
@@ -458,7 +541,7 @@ export default function AllTransactionsPage() {
   // The search RPC caps its result at SEARCH_LIMIT rows, and the category/tag filters
   // below run over only that set — so a capped result filters an incomplete list. Flag
   // it (raw pre-filter count) so the truncation isn't silent.
-  const searchTruncated = searching && (search.data?.length ?? 0) >= SEARCH_LIMIT
+  const searchTruncated = searching && !dslSearch && (search.data?.length ?? 0) >= SEARCH_LIMIT
 
   // Text matching is server-side; here we only apply the category/hidden/quick
   // filters over the active set (month rows, range rows, or search results),
@@ -545,6 +628,7 @@ export default function AllTransactionsPage() {
 
   return (
     <div className="flex flex-col gap-6 pt-2 md:pt-4 lg:flex-row">
+      <AccountsPanel />
       <div className="flex min-w-0 flex-1 flex-col gap-5">
         <div className="flex items-center justify-between gap-3">
           <h1 className="text-2xl font-semibold text-foreground md:text-[2rem] md:leading-10">
@@ -590,32 +674,14 @@ export default function AllTransactionsPage() {
         </div>
 
         {/* Search + filters (sticky on mobile, under the 72px top app bar) */}
-        <div className="sticky top-[72px] z-30 -mx-4 flex flex-col gap-3 bg-background px-4 pb-1 md:static md:z-auto md:mx-0 md:bg-transparent md:px-0 md:pb-0">
+        <div
+          className={cn(
+            'sticky top-[72px] z-30 -mx-4 flex flex-col gap-3 bg-background px-4 pb-1 md:static md:z-auto md:mx-0 md:bg-transparent md:px-0 md:pb-0',
+            analysisTab && 'hidden',
+          )}
+        >
           <div className="flex items-center gap-3">
-            <div className="relative flex-1">
-              <Search
-                aria-hidden="true"
-                className="pointer-events-none absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground"
-              />
-              <input
-                type="search"
-                value={searchText}
-                onChange={(e) => setSearchText(e.target.value)}
-                placeholder="Search transactions..."
-                aria-label="Search transactions"
-                className="w-full card-surface border border-border py-3 pl-10 pr-10 text-sm text-foreground transition-colors placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-              />
-              {searchText && (
-                <button
-                  type="button"
-                  onClick={() => setSearchText('')}
-                  aria-label="Clear search"
-                  className="absolute right-3 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                >
-                  <X aria-hidden="true" className="h-4 w-4" />
-                </button>
-              )}
-            </div>
+            <TransactionSearchBox value={searchText} onChange={setSearchText} />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button
@@ -799,6 +865,18 @@ export default function AllTransactionsPage() {
               Transactions
             </TabsTrigger>
             <TabsTrigger
+              value="spending"
+              className="rounded-full border border-border bg-card px-4 py-2 text-muted-foreground data-[state=active]:border-transparent data-[state=active]:bg-primary data-[state=active]:text-primary-foreground"
+            >
+              Spending
+            </TabsTrigger>
+            <TabsTrigger
+              value="income"
+              className="rounded-full border border-border bg-card px-4 py-2 text-muted-foreground data-[state=active]:border-transparent data-[state=active]:bg-primary data-[state=active]:text-primary-foreground"
+            >
+              Income
+            </TabsTrigger>
+            <TabsTrigger
               value="transfers"
               className="rounded-full border border-border bg-card px-4 py-2 text-muted-foreground data-[state=active]:border-transparent data-[state=active]:bg-primary data-[state=active]:text-primary-foreground"
             >
@@ -922,7 +1000,7 @@ export default function AllTransactionsPage() {
                 {searching ? 'Searching…' : 'Loading…'}
               </p>
             ) : activeError ? (
-              <ErrorState onRetry={retryActive} error={searching ? search.error : monthQuery.error} />
+              <ErrorState onRetry={retryActive} error={searching ? textQuery.error : monthQuery.error} />
             ) : filtered.length === 0 ? (
               <div className="rounded-xl border border-dashed border-outline-variant p-8 text-center text-sm text-muted-foreground">
                 {searching
@@ -946,9 +1024,24 @@ export default function AllTransactionsPage() {
                 }
                 showCategory={showCategoryCol}
                 flat={sortKey !== 'date-desc'}
+                attachmentCounts={attachmentCounts}
               />
             )}
           </TabsContent>
+
+          {(['spending', 'income'] as const).map((v) => (
+            <TabsContent key={v} value={v} className="mt-5">
+              {tab === v && (
+                <FlowAnalysisTab
+                  flow={v === 'spending' ? 'spend' : 'income'}
+                  accountsById={accountsById}
+                  categoriesById={categoriesById}
+                  onSelect={setSelected}
+                  onToggleReviewed={(t) => setReviewed.mutate({ ids: [t.id], reviewed: !t.reviewed })}
+                />
+              )}
+            </TabsContent>
+          ))}
 
           <TabsContent value="transfers" className="mt-5">
             <TransfersTab month={month} />

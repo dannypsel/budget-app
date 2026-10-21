@@ -1,11 +1,12 @@
 // Reports — Simplifi-style report picker. Report types mirror Simplifi's
 // gallery: Spending, Spending Summary, Income, Income Summary, Income &
-// Expense, Monthly Summary — plus PocketLens's own Forecast (live
-// spending-plan baseline projection). Reports can be saved (name + type +
+// Expense, Net Worth, Taxes, Savings, Monthly Summary — plus PocketLens's own
+// Forecast (live spending-plan baseline projection). Reports can be saved (name + type +
 // range + grouping + filters, kept in localStorage) and reopened from the
 // home. Trailing 12 months is the default range. Sign convention: amount > 0
-// = spend, amount < 0 = income. Transfer and ignored exclusions are applied
-// client-side so toggling is instant.
+// = outflow, amount < 0 = inflow; spend vs income follows category type
+// (lib/classify). Transfer and ignored exclusions are applied client-side so
+// toggling is instant.
 
 import { useMemo, useRef, useState } from 'react'
 import {
@@ -37,14 +38,17 @@ import {
 import {
   useAccountsWithBalance,
   useCategories,
+  useCategoryGroups,
   useTransactionsRange,
 } from '@/data/hooks'
 import {
   applyExcludes,
+  expandSplits,
   groupFlow,
   groupKeyFor,
   groupSpend,
   monthlyBuckets,
+  reportFlow,
   topNWithOther,
   type GroupBy,
   type ReportFlow,
@@ -62,6 +66,9 @@ import { useHorizontalWheel } from '@/hooks/useHorizontalWheel'
 import { cn } from '@/lib/utils'
 import { displayName, type Transaction, type UUID } from '@/types/domain'
 import ForecastSection from '@/components/reports/ForecastSection'
+import { ReportTreeTable } from '@/components/reports/ReportTreeTable'
+import { BalanceReport } from '@/components/reports/BalanceReport'
+import { buildCategoryTree, buildTaxTree } from '@/lib/reportTree'
 
 type ReportId =
   | 'spending'
@@ -70,6 +77,9 @@ type ReportId =
   | 'income-summary'
   | 'income-expense'
   | 'monthly-summary'
+  | 'net-worth'
+  | 'taxes'
+  | 'savings'
   | 'forecast'
 
 // ─── date presets ─────────────────────────────────────────────────────────────
@@ -219,7 +229,7 @@ function useReportFilters(): FilterState {
 
 /** Apply a FilterState's excludes + account/category selections to a raw set. */
 function applyFilters(f: FilterState, allTxns: Transaction[]): Transaction[] {
-  let txns = applyExcludes(allTxns, {
+  let txns = applyExcludes(expandSplits(allTxns), {
     excludeTransfers: f.excludeTransfers,
     excludeIgnored: f.excludeIgnored,
   })
@@ -512,8 +522,8 @@ function FlowReport({ f, flow }: { f: FilterState; flow: ReportFlow }) {
     let spend = 0
     let income = 0
     for (const t of filtered) {
-      if (t.amount > 0) spend += t.amount
-      else income += -t.amount
+      if (reportFlow(t) === 'spend') spend += t.amount
+      else income -= t.amount
     }
     return { spend, income, count: filtered.length }
   }, [filtered])
@@ -530,10 +540,17 @@ function FlowReport({ f, flow }: { f: FilterState; flow: ReportFlow }) {
   const drillTxns = useMemo<Transaction[]>(() => {
     if (!drill || drill.id === '__other__') return []
     const list = filtered.filter(
-      (t) => groupKeyFor(t, f.groupBy, accountsById).id === drill.id,
+      (t) => reportFlow(t) === flow && groupKeyFor(t, f.groupBy, accountsById).id === drill.id,
     )
     return [...list].sort((a, b) => b.date.localeCompare(a.date) || b.amount - a.amount)
-  }, [drill, filtered, f.groupBy, accountsById])
+  }, [drill, filtered, f.groupBy, accountsById, flow])
+
+  const { data: categories = [] } = useCategories()
+  const { data: categoryGroups = [] } = useCategoryGroups()
+  const tree = useMemo(
+    () => (f.groupBy === 'category' ? buildCategoryTree(filtered, flow, categories, categoryGroups) : null),
+    [filtered, flow, categories, categoryGroups, f.groupBy],
+  )
 
   function exportGroupsCsv() {
     const csv = rowsToCsv(
@@ -729,6 +746,16 @@ function FlowReport({ f, flow }: { f: FilterState; flow: ReportFlow }) {
             </section>
           )}
 
+          {/* Simplifi's "<flow> transactions by category" tree */}
+          {tree && tree.children.length > 0 && (
+            <ReportTreeTable
+              root={tree}
+              title={`${flow === 'spend' ? 'Expense' : 'Income'} transactions by category`}
+              accountsById={accountsById}
+              flow={flow}
+            />
+          )}
+
           {/* Drill-down */}
           {drill && (
             <section className="card-surface p-4 md:p-6">
@@ -825,10 +852,10 @@ function FlowSummaryReport({ f, flow }: { f: FilterState; flow: ReportFlow }) {
       const bucketTotal = flow === 'spend' ? b.spend : b.income
       const perKey = new Map<string, number>()
       for (const t of filtered) {
-        if (t.date.slice(0, 7) !== b.monthKey) continue
-        if (flow === 'spend' ? t.amount <= 0 : t.amount >= 0) continue
+        if ((t.effective_date ?? '').slice(0, 7) !== b.monthKey) continue
+        if (reportFlow(t) !== flow) continue
         const k = groupKeyFor(t, f.groupBy, accountsById).id
-        perKey.set(k, (perKey.get(k) ?? 0) + Math.abs(t.amount))
+        perKey.set(k, (perKey.get(k) ?? 0) + (flow === 'spend' ? t.amount : -t.amount))
       }
       let topSum = 0
       const cells = groups.map((g) => {
@@ -1177,8 +1204,8 @@ function MonthlySummaryReport() {
     let spend = 0
     let income = 0
     for (const t of txns) {
-      if (t.amount > 0) spend += t.amount
-      else income += -t.amount
+      if (reportFlow(t) === 'spend') spend += t.amount
+      else income -= t.amount
     }
     return { spend, income }
   }, [txns])
@@ -1318,6 +1345,59 @@ function MonthlySummaryReport() {
   )
 }
 
+// ─── taxes / net worth / savings ──────────────────────────────────────────────
+
+function TaxesReport({ f }: { f: FilterState }) {
+  const { filtered, isLoading } = useFilteredTransactions(f)
+  const { data: accounts = [] } = useAccountsWithBalance()
+  const accountsById = useMemo(() => new Map(accounts.map((a) => [a.id, a])), [accounts])
+  const { data: categories = [] } = useCategories()
+  const { data: categoryGroups = [] } = useCategoryGroups()
+  const tree = useMemo(() => buildTaxTree(filtered, categories, categoryGroups), [filtered, categories, categoryGroups])
+  return (
+    <div className="flex flex-col gap-6">
+      <FilterBar f={f} />
+      <p className="text-xs text-muted-foreground">
+        Taxable income is every income-category inflow. Tax payments &amp; deductions are spend in
+        categories named for taxes, charity, medical, education, childcare, or mortgage interest.
+        PocketLens has no tax-form line mapping, so treat this as a worksheet, not tax advice.
+      </p>
+      {isLoading ? (
+        <p className="py-12 text-center text-sm text-muted-foreground">Loading transactions…</p>
+      ) : tree.children.length === 0 ? (
+        <p className="py-12 text-center text-sm text-muted-foreground">No tax-related activity in this range.</p>
+      ) : (
+        <ReportTreeTable root={tree} title="Tax detail" firstColumn="Personal" accountsById={accountsById} flow="mixed" />
+      )}
+    </div>
+  )
+}
+
+function BalanceReportView({ f, mode }: { f: FilterState; mode: 'net-worth' | 'savings' }) {
+  const now = useMemo(() => new Date(), [])
+  const range = useMemo(() => rangeFor(f.preset, now, f.customStart, f.customEnd), [f.preset, f.customStart, f.customEnd, now])
+  return (
+    <div className="flex flex-col gap-6">
+      <label className="flex items-center gap-2 text-sm text-muted-foreground">
+        <span className="eyebrow">Date range</span>
+        <select
+          aria-label="Date range"
+          value={f.preset}
+          onChange={(e) => f.setPreset(e.target.value as Preset)}
+          className="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground"
+        >
+          {PRESETS.filter((p) => p.value !== 'custom').map((p) => (
+            <option key={p.value} value={p.value}>
+              {p.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <BalanceReport mode={mode} start={range.start} end={range.end} />
+    </div>
+  )
+}
+
 // ─── saved reports (localStorage) ─────────────────────────────────────────────
 
 interface SavedReport {
@@ -1384,6 +1464,24 @@ const REPORT_CARDS: { id: ReportId; title: string; hint: string; blurb: string }
     title: 'Income & Expense',
     hint: 'Compare income and expenses',
     blurb: 'Monthly income vs expenses with a net column, month by month.',
+  },
+  {
+    id: 'net-worth',
+    title: 'Net Worth',
+    hint: 'Your net worth over time',
+    blurb: 'Month-end net worth chart and an assets/liabilities-by-account table from your balance history.',
+  },
+  {
+    id: 'taxes',
+    title: 'Taxes',
+    hint: 'Taxable income and deductions',
+    blurb: 'Taxable income and tax-related spending, grouped by category and payee.',
+  },
+  {
+    id: 'savings',
+    title: 'Savings',
+    hint: 'Savings progress over time',
+    blurb: 'Month-end balances of your savings accounts, with a by-account table.',
   },
   {
     id: 'monthly-summary',
@@ -1487,6 +1585,9 @@ const REPORT_TITLES: Record<ReportId, string> = {
   'income-summary': 'Income Summary',
   'income-expense': 'Income & Expense',
   'monthly-summary': 'Monthly Summary',
+  'net-worth': 'Net Worth',
+  taxes: 'Taxes',
+  savings: 'Savings',
   forecast: 'Forecast',
 }
 
@@ -1498,6 +1599,9 @@ const FILTERED_REPORTS: ReportId[] = [
   'income',
   'income-summary',
   'income-expense',
+  'net-worth',
+  'taxes',
+  'savings',
 ]
 
 export default function ReportsPage() {
@@ -1575,6 +1679,9 @@ export default function ReportsPage() {
       {active === 'income-summary' && <FlowSummaryReport f={filters} flow="income" />}
       {active === 'income-expense' && <IncomeExpenseReport f={filters} />}
       {active === 'monthly-summary' && <MonthlySummaryReport />}
+      {active === 'net-worth' && <BalanceReportView f={filters} mode="net-worth" />}
+      {active === 'taxes' && <TaxesReport f={filters} />}
+      {active === 'savings' && <BalanceReportView f={filters} mode="savings" />}
       {active === 'forecast' && <ForecastSection />}
     </div>
   )

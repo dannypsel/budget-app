@@ -3,7 +3,7 @@
 // bucket; click a year to drill into per-account detail. Named scenarios save
 // to retirement_scenarios and can be compared side by side.
 
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Area,
   Bar,
@@ -72,8 +72,28 @@ const TAX_TREATMENTS: Array<{ value: RetirementTaxTreatment; label: string }> = 
   { value: 'roth', label: 'Roth (tax-free)' },
 ]
 
+const DRAFT_KEY = 'pocketlens.retirementDraft'
+
+/** The unsaved working model survives reloads (named scenarios live in Supabase). */
+function loadDraft(): RetirementInputs {
+  const base = defaultRetirementInputs()
+  try {
+    const raw = localStorage.getItem(DRAFT_KEY)
+    return raw ? { ...base, ...(JSON.parse(raw) as Partial<RetirementInputs>) } : base
+  } catch {
+    return base
+  }
+}
+
 export default function RetirementPage() {
-  const [inputs, setInputs] = useState<RetirementInputs>(() => defaultRetirementInputs())
+  const [inputs, setInputs] = useState<RetirementInputs>(loadDraft)
+  useEffect(() => {
+    try {
+      localStorage.setItem(DRAFT_KEY, JSON.stringify(inputs))
+    } catch {
+      // Storage blocked — the draft just won't persist.
+    }
+  }, [inputs])
   const [selectedYear, setSelectedYear] = useState<number | null>(null)
   const [todayDollars, setTodayDollars] = useState(false)
   const [scenarioName, setScenarioName] = useState('')

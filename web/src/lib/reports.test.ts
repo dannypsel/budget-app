@@ -283,3 +283,30 @@ describe('perCardSpend', () => {
     expect(out).toEqual([])
   })
 })
+
+describe('category-type classification (Simplifi parity)', () => {
+  const groceries = { id: 'c-g', name: 'Groceries', color: '#000', icon: '', parent_id: null, group_id: null, sort_order: 0, kind: 'spend' as const }
+  const salary = { ...groceries, id: 'c-s', name: 'Salary', kind: 'income' as const }
+
+  it('a refund nets its spend category down instead of counting as income', () => {
+    const rows = [
+      txn({ amount: 100, category_id: 'c-g', categories: groceries }),
+      txn({ amount: -30, category_id: 'c-g', categories: groceries }),
+      txn({ amount: -2000, category_id: 'c-s', categories: salary }),
+    ]
+    expect(groupSpend(rows, 'category', new Map())).toEqual([
+      { id: 'c-g', label: 'Groceries', total: 70, color: '#000' },
+    ])
+    expect(groupIncome(rows, 'category', new Map()).map((g) => g.total)).toEqual([2000])
+    const [b] = monthlyBuckets(rows, '2026-09-01', '2026-09-30')
+    expect(b.spend).toBe(70)
+    expect(b.income).toBe(2000)
+  })
+
+  it('category-level exclude_from_reports drops the row with "ignored" rows', () => {
+    const excludedCat = { ...groceries, exclude_from_reports: true }
+    const rows = [txn({ amount: 40, category_id: 'c-g', categories: excludedCat })]
+    expect(applyExcludes(rows, { excludeTransfers: true, excludeIgnored: true })).toEqual([])
+    expect(groupSpend(applyExcludes(rows, { excludeTransfers: true, excludeIgnored: false }), 'category', new Map())[0].total).toBe(40)
+  })
+})

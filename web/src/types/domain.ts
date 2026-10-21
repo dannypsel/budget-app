@@ -26,6 +26,8 @@ export interface Category {
   /** False when the user archived the category; undefined on rows read before
    *  the is_active migration. */
   is_active?: boolean
+  /** Simplifi's category-level "Exclude from reports"; undefined before the 20261101 migration. */
+  exclude_from_reports?: boolean
 }
 
 /** tags row. `color` is hex, rendered inline like category colors. */
@@ -87,6 +89,10 @@ export interface Transaction {
   iso_currency_code: string | null // e.g. "USD", "EUR"; non-USD ⇒ foreign transaction
   need_want: NeedWant | null // auto-filled by the backend for new syncs; manual override remembered per merchant
   spend_pattern: SpendPattern | null // fixed vs variable; same auto-fill/override behavior
+  // 20261101 migration (optional until applied): Plaid raw statement text + Simplifi color flag.
+  original_description?: string | null
+  user_flag?: UserFlag | null
+  user_flag_note?: string | null
   categories?: Category | null // embedded relation
   transaction_tags?: TransactionTag[] | null // embedded relation
   transaction_splits?: TransactionSplit[] | null // embedded relation
@@ -718,6 +724,31 @@ export type RewardPointsInsert = Pick<RewardPoints, 'program' | 'holder' | 'bala
 export type NeedWant = 'need' | 'want'
 /** Fixed vs variable spend pattern on a transaction. */
 export type SpendPattern = 'fixed' | 'variable'
+
+/** Simplifi's transaction color flags (order = Simplifi's picker order). */
+export const USER_FLAGS = ['RED', 'ORANGE', 'YELLOW', 'GREEN', 'BLUE', 'VIOLET', 'BLACK', 'BROWN'] as const
+export type UserFlag = (typeof USER_FLAGS)[number]
+export const USER_FLAG_COLORS: Record<UserFlag, string> = {
+  RED: '#E5484D',
+  ORANGE: '#F76B15',
+  YELLOW: '#F5D90A',
+  GREEN: '#30A46C',
+  BLUE: '#0090FF',
+  VIOLET: '#8E4EC6',
+  BLACK: '#1C2024',
+  BROWN: '#AD7F58',
+}
+
+/** transaction_attachments row (file lives in the private "attachments" bucket). */
+export interface TransactionAttachment {
+  id: UUID
+  transaction_id: UUID
+  storage_path: string
+  file_name: string
+  content_type: string | null
+  size_bytes: number | null
+  created_at: string
+}
 
 /** budgets row — one monthly per-category budget target. `month` is the
  *  first-of-month date; `category` is the category name (text). */

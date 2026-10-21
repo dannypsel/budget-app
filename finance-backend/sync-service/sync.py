@@ -6,6 +6,7 @@ import traceback
 from plaid.exceptions import ApiException
 from plaid.model.accounts_get_request import AccountsGetRequest
 from plaid.model.transactions_sync_request import TransactionsSyncRequest
+from plaid.model.transactions_sync_request_options import TransactionsSyncRequestOptions
 
 import vault
 from categorizer import apply_learned, fill_txn_tags, load_guess_context
@@ -38,7 +39,7 @@ PLAID_OWNED = ('date', 'authorized_date', 'amount', 'merchant_name',
                'description', 'plaid_category', 'plaid_category_detail',
                'pending', 'merchant_city', 'merchant_region', 'merchant_country',
                'merchant_postal_code', 'merchant_store_number', 'merchant_lat',
-               'merchant_lon', 'iso_currency_code')
+               'merchant_lon', 'iso_currency_code', 'original_description')
 
 
 def plaid_txn_fields(txn: dict) -> dict:
@@ -67,16 +68,20 @@ def plaid_txn_fields(txn: dict) -> dict:
         # Settlement currency. Prefer the ISO code; fall back to the
         # unofficial code Plaid uses for crypto / non-ISO currencies.
         'iso_currency_code': txn.get('iso_currency_code') or txn.get('unofficial_currency_code'),
+        # Raw bank statement text (Simplifi's "statement name"); requested via
+        # include_original_description on every sync call.
+        'original_description': txn.get('original_description'),
     }
 
 
 def txn_sync_request(access_token, cursor=None) -> TransactionsSyncRequest:
     # Don't pass the cursor kwarg at all on a fresh start — the SDK treats
     # absent vs None differently.
+    options = TransactionsSyncRequestOptions(include_original_description=True)
     if cursor:
         return TransactionsSyncRequest(access_token=access_token,
-                                       cursor=cursor, count=500)
-    return TransactionsSyncRequest(access_token=access_token, count=500)
+                                       cursor=cursor, count=500, options=options)
+    return TransactionsSyncRequest(access_token=access_token, count=500, options=options)
 
 
 def _fill_user_owned_defaults(rows: list) -> list:

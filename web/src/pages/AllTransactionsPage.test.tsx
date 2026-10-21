@@ -17,6 +17,10 @@ vi.mock('@/data/transactions', () => ({
 
 const monthTxn = makeTxn({ id: 'txn-month', merchant_name: 'Month Coffee' })
 const hitTxn = makeTxn({ id: 'txn-hit', merchant_name: 'Search Hit' })
+const rangeTxns = [
+  makeTxn({ id: 'txn-big', merchant_name: 'Big Purchase', amount: 900 }),
+  makeTxn({ id: 'txn-small', merchant_name: 'Small Purchase', amount: 12 }),
+]
 
 vi.mock('@/data/hooks', () => ({
   useTransactionsMonthAll: () => ({ data: [monthTxn], isLoading: false }),
@@ -40,7 +44,12 @@ vi.mock('@/data/hooks', () => ({
   useDeleteCategory: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
   useBulkCategorizeMerchant: () => ({ mutate: vi.fn() }),
   // Simplifi-parity additions: range presets, reviewed flag, bulk-by-ids, + New.
-  useTransactionsRange: () => ({ data: [], isPending: false, isError: false, refetch: vi.fn() }),
+  useTransactionsRange: (_s: string, _e: string, opts?: { enabled?: boolean }) => ({
+    data: opts?.enabled ? rangeTxns : [],
+    isPending: false,
+    isError: false,
+    refetch: vi.fn(),
+  }),
   useSetReviewed: () => ({ mutate: vi.fn() }),
   useBulkSetCategoryByIds: () => ({ mutate: vi.fn() }),
   useCreateManualTransaction: () => ({ mutateAsync: vi.fn(), isPending: false }),
@@ -53,6 +62,15 @@ vi.mock('@/data/hooks', () => ({
       ? { data: q.trim() === 'zzz' ? [] : [hitTxn], isPending: false }
       : { data: undefined, isPending: true },
   useRecurringSeries: () => ({ data: [], isLoading: false }),
+  // Accounts panel + transaction details (Simplifi parity).
+  useSeparateAccounts: () => ({ data: [] }),
+  usePlaidItems: () => ({ data: [] }),
+  useAddRule: () => ({ mutate: vi.fn(), isPending: false }),
+  useSetRecurringStatus: () => ({ mutate: vi.fn() }),
+}))
+
+vi.mock('@/data/txnExtras', () => ({
+  fetchAttachmentCounts: vi.fn().mockResolvedValue(new Map()),
 }))
 
 function renderPage() {
@@ -84,4 +102,20 @@ it('shows a designed no-matches state', async () => {
   renderPage()
   await userEvent.type(screen.getByLabelText('Search transactions'), 'zzz')
   expect(await screen.findByText('No matches for “zzz”.')).toBeInTheDocument()
+})
+
+it('search syntax filters client-side over the implied date window', async () => {
+  renderPage()
+  await userEvent.type(screen.getByLabelText('Search transactions'), 'amount>500')
+  expect(await screen.findByText('Big Purchase')).toBeInTheDocument()
+  expect(screen.queryByText('Small Purchase')).not.toBeInTheDocument()
+  expect(screen.queryByText('Search Hit')).not.toBeInTheDocument()
+})
+
+it('documents the search syntax in the Shortcuts drawer', async () => {
+  renderPage()
+  await userEvent.click(screen.getByLabelText('Search syntax help'))
+  expect(await screen.findByText('payee:walmart,target')).toBeInTheDocument()
+  await userEvent.click(screen.getByText('is:pending'))
+  expect(screen.getByLabelText('Search transactions')).toHaveValue('is:pending')
 })

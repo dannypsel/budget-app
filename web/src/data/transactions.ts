@@ -18,7 +18,7 @@ const SELECT =
  *  effective_date, id as tiebreaker) so pages can't skip or repeat rows. */
 const PAGE_SIZE = 1000
 
-function fetchAllPages(
+export function fetchAllPages(
   buildPage: (
     from: number,
     to: number,

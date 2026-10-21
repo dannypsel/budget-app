@@ -5,6 +5,17 @@ import { TransactionList, groupByDay } from './TransactionList'
 import { makeTxn, makeCategory } from '@/test/factories'
 
 describe('groupByDay', () => {
+  it('puts pending rows in a leading Pending group regardless of date', () => {
+    const groups = groupByDay([
+      makeTxn({ id: 'a', effective_date: '2026-06-03' }),
+      makeTxn({ id: 'b', effective_date: '2026-06-01', pending: true }),
+    ])
+    expect(groups.map(([k, rows]) => [k, rows.map((r) => r.id)])).toEqual([
+      ['__pending__', ['b']],
+      ['2026-06-03', ['a']],
+    ])
+  })
+
   it('groups transactions by effective_date, preserving order', () => {
     const txns = [
       makeTxn({ id: 'a', effective_date: '2026-06-15' }),
@@ -32,9 +43,10 @@ describe('<TransactionList>', () => {
     expect(onSelect).toHaveBeenCalledWith(txns[0])
   })
 
-  it('shows a Pending tag when pending', () => {
+  it('shows a Pending tag and pins pending rows under a Pending header', () => {
     render(<TransactionList transactions={[makeTxn({ pending: true })]} />)
-    expect(screen.getByText('Pending')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Pending' })).toBeInTheDocument()
+    expect(screen.getAllByText('Pending')).toHaveLength(2)
   })
 
   it('renders a "Reimbursement · <Category>" badge for a reimbursement credit', () => {

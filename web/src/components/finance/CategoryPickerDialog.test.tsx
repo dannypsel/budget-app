@@ -9,6 +9,10 @@ const setReimbursementMutate = vi.fn()
 const setExcludeMutate = vi.fn()
 const upsertCategoryAsync = vi.fn()
 
+// The Simplifi details section (flags, notes, splits, attachments…) is covered in
+// TransactionDetails.test.tsx; it needs a QueryClient this test doesn't provide.
+vi.mock('./TransactionDetails', () => ({ TransactionDetails: () => null }))
+
 vi.mock('@/data/hooks', () => ({
   useCategories: () => ({
     data: [

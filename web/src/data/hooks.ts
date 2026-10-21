@@ -20,6 +20,7 @@ import * as monthBudgetsApi from './monthBudgets'
 import * as forecastAdjustmentsApi from './forecastAdjustments'
 import * as retirementScenariosApi from './retirementScenarios'
 import * as txnTagsApi from './txnTags'
+import * as balanceHistoryApi from './balanceHistory'
 import type { TxnTagPatch } from './txnTags'
 import { fetchPlaidItems, deleteItem as deletePlaidItem } from './plaidItems'
 import { toISODate } from '@/lib/dates'
@@ -289,6 +290,14 @@ export function useAccountsWithBalance() {
 }
 export function useAccounts() {
   return useQuery({ queryKey: sbKeys.accounts, queryFn: () => accts.fetchAccounts() })
+}
+/** Balance history rows in [startISO, endISO] (Net Worth / Savings reports). */
+export function useBalanceHistory(startISO: string, endISO: string) {
+  return useQuery({
+    queryKey: ['sb', 'balanceHistory', startISO, endISO] as const,
+    queryFn: () => balanceHistoryApi.fetchBalanceHistory(startISO, endISO),
+    enabled: startISO !== '' && endISO !== '' && startISO <= endISO,
+  })
 }
 
 /** Soft-delete a single Plaid account (sets is_active = false). The institution

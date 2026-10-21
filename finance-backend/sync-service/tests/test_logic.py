@@ -137,7 +137,7 @@ def test_transaction_sync_logic():
     # no N+1: account_id came from the in-memory map, never a per-txn SELECT,
     # and each page's adds went out as a single batch upsert.
     per_txn_lookup = [c for c in db.calls if c[0] == "accounts" and c[1] == "select"
-                      and any(f[1] == "plaid_account_id" for f in c[2])]
+                      and any(f[0] == "eq" and f[1] == "plaid_account_id" for f in c[2])]
     assert not per_txn_lookup, "added txns must not trigger per-transaction account SELECTs"
     txn_upserts = [c for c in db.calls if c[0] == "transactions" and c[1] == "upsert"]
     assert len(txn_upserts) == 2, "one batch upsert per page-with-adds, not per row"
@@ -228,6 +228,23 @@ def test_unofficial_currency_code_fallback():
         "iso_currency_code": None, "unofficial_currency_code": "BTC",
     })
     assert fields["iso_currency_code"] == "BTC"
+
+
+def test_original_description_is_plaid_owned_and_requested():
+    """Plaid's raw statement text maps to original_description, and every sync
+    request asks Plaid to include it."""
+    fields = sync.plaid_txn_fields({
+        "transaction_id": "t", "date": "2026-06-01", "amount": 1.0,
+        "name": "Starbucks", "pending": False,
+        "original_description": "SQ *STARBUCKS #1234 SEATTLE WA",
+    })
+    assert fields["original_description"] == "SQ *STARBUCKS #1234 SEATTLE WA"
+    assert sync.plaid_txn_fields({
+        "transaction_id": "t", "date": "2026-06-01", "amount": 1.0,
+        "name": "X", "pending": False,
+    })["original_description"] is None
+    for req in (sync.txn_sync_request("tok"), sync.txn_sync_request("tok", "cur")):
+        assert req.options.include_original_description is True
 
 
 # ── 2. Categorization ───────────────────────────────────────────────────────

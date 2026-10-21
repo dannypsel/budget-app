@@ -14,6 +14,7 @@ import { displayName, isForeignCurrency, isReimbursement, isTransfer, merchantLo
 import { formatAmount, formatCurrency } from '@/lib/money'
 import { formatShortDate } from '@/lib/dates'
 import { summarizeTransferGroup } from '@/data/transfers'
+import { TransactionDetails } from './TransactionDetails'
 
 export function CategoryPickerDialog({
   txn,
@@ -116,7 +117,7 @@ export function CategoryPickerDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md overflow-hidden">
+      <DialogContent className="max-h-[90vh] max-w-md overflow-y-auto">
 
         {txn && isTransfer(txn) ? (
           // ── Transfer view — transfers don't have categories ──
@@ -307,6 +308,7 @@ export function CategoryPickerDialog({
                 </button>
               </div>
             )}
+            {txn && <TransactionDetails txn={txn} />}
           </>
         )}
 

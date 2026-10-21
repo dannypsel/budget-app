@@ -4,7 +4,7 @@
 // Mirrors iOS TransactionRowView + day grouping.
 
 import { useMemo, type ReactNode } from 'react'
-import { ArrowLeftRight, CheckCircle2, Circle, EyeOff, Split, Undo2, type LucideIcon } from 'lucide-react'
+import { ArrowLeftRight, CheckCircle2, Circle, EyeOff, Flag, Paperclip, Split, Undo2, type LucideIcon } from 'lucide-react'
 import { CategoryBadge } from '@/components/finance/CategoryBadge'
 import { Amount } from '@/components/finance/Amount'
 import { iconForSymbol } from '@/lib/iconMap'
@@ -17,15 +17,21 @@ import {
   isReimbursement,
   isTransfer,
   txnSplits,
+  USER_FLAG_COLORS,
   type Account,
   type Transaction,
   type UUID,
 } from '@/types/domain'
 
+/** Group key for pending rows — pinned above every day, like Simplifi's
+ *  "9999-99:Pending" register group. */
+const PENDING_GROUP = '__pending__'
+
 export function groupByDay(txns: Transaction[]): [string, Transaction[]][] {
   const groups = new Map<string, Transaction[]>()
+  if (txns.some((t) => t.pending)) groups.set(PENDING_GROUP, [])
   for (const t of txns) {
-    const k = dayKey(t.effective_date)
+    const k = t.pending ? PENDING_GROUP : dayKey(t.effective_date)
     if (!groups.has(k)) groups.set(k, [])
     groups.get(k)!.push(t)
   }
@@ -51,6 +57,7 @@ export function TransactionList({
   onToggleReviewed,
   showCategory = true,
   flat = false,
+  attachmentCounts,
 }: {
   transactions: Transaction[]
   /** Optional lookup map for rendering the account name under each row. */
@@ -69,6 +76,8 @@ export function TransactionList({
   showCategory?: boolean
   /** Render as one flat card without day headers (non-date sort orders). */
   flat?: boolean
+  /** Transaction id → attachment count, for the paperclip marker. */
+  attachmentCounts?: Map<UUID, number>
 }) {
   const groups = useMemo(
     () => (flat ? [['__flat__', transactions] as [string, Transaction[]]] : groupByDay(transactions)),
@@ -79,7 +88,9 @@ export function TransactionList({
       {groups.map(([day, rows]) => (
         <section key={day}>
           {!flat && (
-            <h2 className="mb-3 text-xl font-medium text-foreground">{formatDayHeader(day)}</h2>
+            <h2 className="mb-3 text-xl font-medium text-foreground">
+              {day === PENDING_GROUP ? 'Pending' : formatDayHeader(day)}
+            </h2>
           )}
           <div className="overflow-hidden card-surface border border-border">
             {rows.map((t) => {
@@ -134,9 +145,24 @@ export function TransactionList({
                     <Icon className="h-5 w-5" />
                   </span>
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium text-foreground transition-colors group-hover:text-primary">
-                      {displayName(t)}
+                    <p className="flex items-center gap-1.5 text-sm font-medium text-foreground transition-colors group-hover:text-primary">
+                      {t.user_flag && (
+                        <Flag
+                          className="h-3.5 w-3.5 shrink-0"
+                          style={{ color: USER_FLAG_COLORS[t.user_flag], fill: USER_FLAG_COLORS[t.user_flag] }}
+                          aria-label={`${t.user_flag.toLowerCase()} flag`}
+                        />
+                      )}
+                      <span className="truncate">{displayName(t)}</span>
+                      {attachmentCounts?.get(t.id) ? (
+                        <Paperclip className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-label="Has attachments" />
+                      ) : null}
                     </p>
+                    {t.original_description && t.original_description !== displayName(t) && (
+                      <p className="truncate text-xs text-muted-foreground/70" title="Statement name">
+                        {t.original_description}
+                      </p>
+                    )}
                     <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground">
                       {isReimbursement(t) ? (
                         <span>

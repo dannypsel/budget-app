@@ -1,10 +1,12 @@
 // Accounts overview — Simplifi-style account hierarchy on the dashboard:
 // All Accounts net total, then Banking (Cash & Checking / Credit / Savings),
-// Investments, Assets, Liabilities, each group with a signed subtotal and
+// Investments, Loans, Assets, Liabilities, each group with a signed subtotal and
 // expandable account rows that link to their registers. Header controls
 // mirror Simplifi's: Privacy Mode (mask balances) and a balance-options menu
-// with "Show closed accounts". Liabilities render sign-flipped to net-worth
-// convention in neutral text (never red), mirroring AccountsPage.
+// with "Show closed accounts"; the header shows when accounts last synced.
+// Liabilities render sign-flipped to net-worth convention in neutral text
+// (never red), mirroring AccountsPage. Also mounted as the Transactions page's
+// collapsible Accounts panel (Simplifi shows it on Dashboard + Transactions).
 
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
@@ -16,7 +18,8 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { useAccountsWithBalance, useSeparateAccounts } from '@/data/hooks'
+import { useAccountsWithBalance, usePlaidItems, useSeparateAccounts } from '@/data/hooks'
+import { formatRelativeTime } from '@/lib/dates'
 import { isLiabilityType } from '@/types/domain'
 import { formatCurrency } from '@/lib/money'
 import { cn } from '@/lib/utils'
@@ -26,16 +29,18 @@ type SectionKey =
   | 'banking-credit'
   | 'banking-savings'
   | 'investments'
+  | 'loans'
   | 'assets'
   | 'liabilities'
 
-type GroupKey = 'banking' | 'investments' | 'assets' | 'liabilities'
+type GroupKey = 'banking' | 'investments' | 'loans' | 'assets' | 'liabilities'
 
 const SECTION_TITLE: Record<SectionKey, string> = {
   'banking-cash': 'Cash & Checking',
   'banking-credit': 'Credit',
   'banking-savings': 'Savings',
   investments: 'Investments',
+  loans: 'Loans',
   assets: 'Assets',
   liabilities: 'Liabilities',
 }
@@ -45,6 +50,7 @@ const GROUP_OF_SECTION: Record<SectionKey, GroupKey> = {
   'banking-credit': 'banking',
   'banking-savings': 'banking',
   investments: 'investments',
+  loans: 'loans',
   assets: 'assets',
   liabilities: 'liabilities',
 }
@@ -52,16 +58,18 @@ const GROUP_OF_SECTION: Record<SectionKey, GroupKey> = {
 const GROUP_TITLE: Record<GroupKey, string> = {
   banking: 'Banking',
   investments: 'Investments',
+  loans: 'Loans',
   assets: 'Assets',
   liabilities: 'Liabilities',
 }
 
-const GROUP_ORDER: GroupKey[] = ['banking', 'investments', 'assets', 'liabilities']
+const GROUP_ORDER: GroupKey[] = ['banking', 'investments', 'loans', 'assets', 'liabilities']
 const SECTION_ORDER: SectionKey[] = [
   'banking-cash',
   'banking-credit',
   'banking-savings',
   'investments',
+  'loans',
   'assets',
   'liabilities',
 ]
@@ -84,7 +92,7 @@ function plaidSection(type: string, subtype: string | null): SectionKey {
   if (type === 'credit') return 'banking-credit'
   if (type === 'depository') return subtype === 'savings' ? 'banking-savings' : 'banking-cash'
   if (type === 'investment') return 'investments'
-  if (type === 'loan') return 'liabilities'
+  if (type === 'loan') return 'loans'
   return 'assets'
 }
 
@@ -93,17 +101,48 @@ function manualSection(type: string): SectionKey {
   if (type === 'savings') return 'banking-savings'
   if (type === 'checking' || type === 'depository') return 'banking-cash'
   if (type === 'investment') return 'investments'
-  if (type === 'loan') return 'liabilities'
+  if (type === 'loan') return 'loans'
   return 'assets'
 }
 
-export default function AccountsOverview() {
+const PRIVACY_KEY = 'pocketlens.privacyMode'
+
+export default function AccountsOverview({
+  className,
+  compact = false,
+}: { className?: string; compact?: boolean } = {}) {
   const { data: plaid = [] } = useAccountsWithBalance()
   const { data: manual = [] } = useSeparateAccounts()
   const [open, setOpen] = useState<Set<string>>(
     () => new Set(['banking', 'banking-cash', 'banking-credit', 'banking-savings']),
   )
-  const [privacyMode, setPrivacyMode] = useState(false)
+  const [privacyMode, setPrivacyModeState] = useState(() => {
+    try {
+      return localStorage.getItem(PRIVACY_KEY) === '1'
+    } catch {
+      return false
+    }
+  })
+  const setPrivacyMode = (update: (v: boolean) => boolean) =>
+    setPrivacyModeState((prev) => {
+      const next = update(prev)
+      try {
+        localStorage.setItem(PRIVACY_KEY, next ? '1' : '0')
+      } catch {
+        // Storage blocked — privacy mode still applies for this session.
+      }
+      return next
+    })
+  const { data: plaidItems = [] } = usePlaidItems()
+  const lastSynced = useMemo(
+    () =>
+      plaidItems
+        .map((i) => i.last_synced_at)
+        .filter((d): d is string => !!d)
+        .sort()
+        .at(-1) ?? null,
+    [plaidItems],
+  )
   const [showClosed, setShowClosed] = useState(false)
 
   const bySection = useMemo(() => {
@@ -171,9 +210,14 @@ export default function AccountsOverview() {
     privacyMode ? '••••' : n == null ? '—' : formatCurrency(n)
 
   return (
-    <section className="card-surface p-4 md:p-6">
+    <section className={cn('card-surface p-4 md:p-6', className)}>
       <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-xl font-medium leading-7 text-foreground">Accounts</h2>
+        <div>
+          <h2 className="text-xl font-medium leading-7 text-foreground">Accounts</h2>
+          {lastSynced && (
+            <p className="text-xs text-muted-foreground">Updated {formatRelativeTime(lastSynced)}</p>
+          )}
+        </div>
         <div className="flex items-center gap-1">
           <button
             type="button"
@@ -187,7 +231,7 @@ export default function AccountsOverview() {
             ) : (
               <Eye className="h-4 w-4" aria-hidden />
             )}
-            <span className="hidden sm:inline">Privacy Mode</span>
+            {!compact && <span className="hidden sm:inline">Privacy Mode</span>}
           </button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -206,7 +250,7 @@ export default function AccountsOverview() {
               </DropdownMenuCheckboxItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          <Link to="/accounts" className="text-sm font-semibold text-primary hover:underline">
+          <Link to="/accounts" className="whitespace-nowrap text-sm font-semibold text-primary hover:underline">
             View all
           </Link>
         </div>

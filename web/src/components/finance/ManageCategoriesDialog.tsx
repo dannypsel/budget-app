@@ -226,6 +226,30 @@ export function ManageCategoriesDialog({
                   <Trash2 aria-hidden className="h-4 w-4" />
                 </button>
               </div>
+              <div className="flex flex-wrap items-center gap-3 pb-1 pl-[92px] text-xs text-muted-foreground">
+                <label className="flex items-center gap-1">
+                  Type
+                  <select
+                    aria-label={`${c.name} type`}
+                    value={c.kind}
+                    onChange={(e) => save(c, { kind: e.target.value as Category['kind'] })}
+                    className="rounded border border-border bg-card px-1 py-0.5 text-xs text-foreground"
+                  >
+                    <option value="spend">Spending</option>
+                    <option value="income">Income</option>
+                  </select>
+                </label>
+                <label className="flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={!!c.exclude_from_reports}
+                    onChange={(e) => save(c, { exclude_from_reports: e.target.checked })}
+                    aria-label={`Exclude ${c.name} from reports`}
+                    className="h-3.5 w-3.5 accent-primary"
+                  />
+                  Exclude from reports
+                </label>
+              </div>
               {iconPickerFor === c.id && (
                 <div className="mt-2">
                   <IconPicker

@@ -1,10 +1,12 @@
 // Pure aggregation helpers for the Reports page (unit-tested in reports.test.ts).
 // The page only wires data + charts; all math lives here.
 //
-// Sign convention (see types/domain Transaction): amount > 0 = spend/outflow,
-// amount < 0 = income/inflow. Grouped breakdowns are SPEND-ONLY: income rows never
-// land in a spend group. Transfer exclusion covers BOTH legs of a linked transfer.
+// Sign convention (see types/domain Transaction): amount > 0 = outflow, amount < 0 =
+// inflow. Spend vs income is decided by category type (lib/classify, Simplifi's rule):
+// a refund on a spend category nets that category down rather than counting as income.
+// Transfer exclusion covers BOTH legs of a linked transfer.
 
+import { flowOf, type Flow } from '@/lib/classify'
 import {
   displayName,
   isTransfer,
@@ -14,7 +16,7 @@ import {
 } from '@/types/domain'
 
 /** One spend breakdown row. `id` is a stable key (category id / account id / merchant
- *  label); `label` is what the charts and CSV show. `total` is Σ positive amounts. */
+ *  label); `label` is what the charts and CSV show. `total` is the group's net flow total. */
 export interface ReportGroup {
   id: string
   label: string
@@ -25,8 +27,7 @@ export interface ReportGroup {
 
 export type GroupBy = 'category' | 'merchant' | 'account' | 'tag'
 
-/** The money flow a report aggregates: spend = outflows (amount > 0),
- *  income = inflows (amount < 0, grouped by magnitude). */
+/** The money flow a report aggregates (see reportFlow). */
 export type ReportFlow = 'spend' | 'income'
 
 /** Which rows enter the report. Both default ON on the page; the page always fetches
@@ -43,9 +44,54 @@ export interface ReportExcludes {
 export function applyExcludes(txns: Transaction[], opts: ReportExcludes): Transaction[] {
   return txns.filter((t) => {
     if (opts.excludeTransfers && isTransfer(t)) return false
-    if (opts.excludeIgnored && t.exclude_from_totals && !isTransfer(t)) return false
+    if (opts.excludeIgnored && !isTransfer(t) && (t.exclude_from_totals || t.categories?.exclude_from_reports))
+      return false
     return true
   })
+}
+
+/** The flow a row counts toward once it has passed applyExcludes. Category type
+ *  decides (lib/classify); rows the user chose to keep despite being transfers or
+ *  excluded fall back to the sign / their category so the toggles still work. */
+export function reportFlow(t: Transaction): Exclude<Flow, 'excluded' | 'transfer'> {
+  const f = flowOf(t)
+  if (f === 'spend' || f === 'income') return f
+  if (f === 'excluded') {
+    const kept = flowOf({ ...t, exclude_from_totals: false, hidden: false }, t.categories && { ...t.categories, exclude_from_reports: false })
+    if (kept === 'spend' || kept === 'income') return kept
+  }
+  return t.amount > 0 ? 'spend' : 'income'
+}
+
+/** Signed contribution to `flow`: outflows positive for spend, inflows positive for income. */
+function signedFor(t: Transaction, flow: ReportFlow): number {
+  return flow === 'spend' ? t.amount : -t.amount
+}
+
+/** One report row per split for split transactions (each carrying its split's
+ *  category and amount), so category aggregation attributes splits correctly —
+ *  the same rule as the category_spend view. Rows keep the parent id prefix for
+ *  React keys only; never pass them to mutations. */
+export function expandSplits(txns: Transaction[]): Transaction[] {
+  const out: Transaction[] = []
+  for (const t of txns) {
+    const splits = t.transaction_splits ?? []
+    if (splits.length === 0) {
+      out.push(t)
+      continue
+    }
+    for (const sp of splits) {
+      out.push({
+        ...t,
+        id: `${t.id}:${sp.id}`,
+        amount: Number(sp.amount),
+        category_id: sp.category_id,
+        categories: sp.categories ?? null,
+        transaction_splits: [],
+      })
+    }
+  }
+  return out
 }
 
 /** Stable group key for one transaction under the chosen grouping — shared by
@@ -76,7 +122,8 @@ export function groupKeyFor(
   return { id: t.account_id, label: accountsById.get(t.account_id)?.name ?? 'Unknown account' }
 }
 
-/** Group one money flow by the chosen dimension, sorted desc by total.
+/** Group one money flow by the chosen dimension, net of credits, sorted desc by total;
+ *  groups that net to ≤ 0 (fully refunded) are dropped.
  *  - category → category name ("Uncategorized" fallback), keyed by category id
  *  - merchant → merchant_name ?? description ("Unknown" fallback)
  *  - account → account name from `accountsById` ("Unknown account" fallback)
@@ -90,18 +137,18 @@ export function groupFlow(
 ): ReportGroup[] {
   const byKey = new Map<string, ReportGroup>()
   for (const t of txns) {
-    if (flow === 'spend' ? t.amount <= 0 : t.amount >= 0) continue
-    const mag = Math.abs(t.amount)
+    if (reportFlow(t) !== flow) continue
+    const amt = signedFor(t, flow)
     const { id, label, color } = groupKeyFor(t, groupBy, accountsById)
     const row = byKey.get(id)
-    if (row) row.total += mag
-    else byKey.set(id, { id, label, total: mag, color })
+    if (row) row.total += amt
+    else byKey.set(id, { id, label, total: amt, color })
   }
-  return [...byKey.values()].sort((a, b) => b.total - a.total)
+  return [...byKey.values()].filter((g) => g.total > 0.005).sort((a, b) => b.total - a.total)
 }
 
 /** Group SPEND by the chosen dimension, sorted desc by total.
- *  Income (amount ≤ 0) never enters a spend group. */
+ *  Income-flow rows never enter a spend group. */
 export function groupSpend(
   txns: Transaction[],
   groupBy: GroupBy,
@@ -111,7 +158,7 @@ export function groupSpend(
 }
 
 /** Group INCOME by the chosen dimension (magnitudes), sorted desc by total.
- *  Spend (amount ≥ 0) never enters an income group. */
+ *  Spend-flow rows never enter an income group. */
 export function groupIncome(
   txns: Transaction[],
   groupBy: GroupBy,
@@ -130,7 +177,7 @@ export function topNWithOther(groups: ReportGroup[], n: number): ReportGroup[] {
 }
 
 /** One bucket per calendar month spanning [startISO, endISO], inclusive of both
- *  endpoint months. spend = Σ positive amounts; income = Σ |negative amounts|. */
+ *  endpoint months. spend / income are net totals per reportFlow. */
 export interface MonthlyBucket {
   monthKey: string // "2026-09"
   label: string // "Sep 2026"
@@ -162,8 +209,8 @@ export function monthlyBuckets(
     const key = (t.effective_date ?? '').slice(0, 7)
     const b = buckets.find((x) => x.monthKey === key)
     if (!b) continue
-    if (t.amount > 0) b.spend += t.amount
-    else if (t.amount < 0) b.income += Math.abs(t.amount)
+    if (reportFlow(t) === 'spend') b.spend += t.amount
+    else b.income -= t.amount
   }
   return buckets
 }
