@@ -127,7 +127,20 @@ export function useUpsertCategory() {
   })
 }
 
-/** Set up Churning › Annual Fees / Credit Sales / Bonuses & Referrals (excluded from reports). */
+/** One-click churning setup (data/categories.setUpChurning): Churning categories,
+ *  Fees & Charges folded in and archived. */
+export function useSetUpChurning() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: cats.setUpChurning,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: sbKeys.categories })
+      qc.invalidateQueries({ queryKey: ['sb', 'transactions'] })
+    },
+  })
+}
+
+/** Set up Churning › Annual Fees / Credit Sales / Bonuses & Referrals / Card Credits (excluded from reports). */
 export function useEnsureChurningCategories() {
   const qc = useQueryClient()
   return useMutation({

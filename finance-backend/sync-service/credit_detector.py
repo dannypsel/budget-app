@@ -149,6 +149,27 @@ def rollover_if_needed(supabase, credit, today=None):
     return credit
 
 
+def file_card_credits(supabase, user_id: str, txn_ids: set) -> None:
+    """Detected statement credits are churning money: file them under
+    Churning › Card Credits (when the user has it) so they leave spending
+    reports with the rest of churning. Best-effort — never breaks detection."""
+    from categorizer import churning_ids
+    try:
+        cats = supabase.table('categories').select('id, name, parent_id') \
+            .eq('user_id', user_id).eq('is_active', True).execute().data or []
+        target = churning_ids(cats)['card_credits']
+        if not target:
+            return
+        supabase.table('transactions') \
+            .update({'category_id': target, 'is_reimbursement': False}) \
+            .eq('user_id', user_id) \
+            .in_('id', sorted(txn_ids)) \
+            .execute()
+    except Exception:
+        logger.exception('credit detection: filing card credits failed',
+                         extra={'user_id': user_id})
+
+
 def detect_credit_usage(supabase, user_id, today=None) -> dict:
     """Scan the user's auto-detect credits against fresh transactions and mark
     any whose statement credit posted. Matching postings accumulate toward
@@ -282,5 +303,8 @@ def detect_credit_usage(supabase, user_id, today=None) -> dict:
             stats['errors'] += 1
             logger.exception('credit detection failed for credit',
                              extra={'credit_id': credit.get('id'), 'user_id': user_id})
+
+    if run_claimed:
+        file_card_credits(supabase, user_id, run_claimed)
 
     return stats

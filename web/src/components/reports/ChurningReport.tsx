@@ -12,9 +12,17 @@ import {
   useBulkSetCategoryByIds,
   useCategories,
   useEnsureChurningCategories,
+  useSetUpChurning,
   useTransactionsRange,
 } from '@/data/hooks'
-import { annualFeeCandidates, annualFeesCategory, churningRoot, churningSummary, type ChurningLine } from '@/lib/churningMoney'
+import {
+  annualFeeCandidates,
+  annualFeesCategory,
+  churningRoot,
+  churningSummary,
+  feesAndChargesIds,
+  type ChurningLine,
+} from '@/lib/churningMoney'
 import { categoryPath } from '@/lib/categoryTree'
 import { formatCurrency } from '@/lib/money'
 import { formatShortDate, toISODate } from '@/lib/dates'
@@ -83,12 +91,14 @@ export function ChurningReport({ start, end, exportRef }: { start: string; end: 
   const accountsById = useMemo(() => new Map(accounts.map((a) => [a.id, a])), [accounts])
   const byId = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories])
   const ensure = useEnsureChurningCategories()
+  const setUp = useSetUpChurning()
   const bulkSet = useBulkSetCategoryByIds()
   const [showAllCandidates, setShowAllCandidates] = useState(false)
 
   const summary = useMemo(() => churningSummary(txns, categories, accountsById), [txns, categories, accountsById])
   const candidates = useMemo(() => annualFeeCandidates(txns, categories, accountsById), [txns, categories, accountsById])
   const hasChurning = churningRoot(categories) != null
+  const hasFeesAndCharges = feesAndChargesIds(categories).size > 0
 
   useEffect(() => {
     exportRef.current = () =>
@@ -113,7 +123,7 @@ export function ChurningReport({ start, end, exportRef }: { start: string; end: 
     }
   }
 
-  const busy = ensure.isPending || bulkSet.isPending
+  const busy = ensure.isPending || bulkSet.isPending || setUp.isPending
   const candidateTotal = candidates.reduce((s, t) => s + t.amount, 0)
   const shownCandidates = showAllCandidates ? candidates : candidates.slice(0, 8)
 
@@ -125,19 +135,30 @@ export function ChurningReport({ start, end, exportRef }: { start: string; end: 
         your money actually goes.
       </p>
 
-      {!hasChurning && (
+      {(!hasChurning || hasFeesAndCharges) && (
         <section className="card-surface flex flex-col gap-3 border border-border p-4 sm:flex-row sm:items-center">
           <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-violet-100 text-violet-700">
             <CreditCard className="h-5 w-5" aria-hidden />
           </span>
           <div className="min-w-0 flex-1">
-            <p className="text-sm font-semibold text-foreground">Set up churning categories</p>
+            <p className="text-sm font-semibold text-foreground">Set up Churning</p>
             <p className="text-xs text-muted-foreground">
-              Adds Churning › Annual Fees, Credit Sales and Bonuses &amp; Referrals, all excluded from reports.
+              Adds Churning › Annual Fees, Credit Sales, Bonuses &amp; Referrals and Card Credits, all excluded from
+              reports. {hasFeesAndCharges && 'Moves every Fees & Charges transaction into Churning (annual fees to Annual Fees) and archives Fees & Charges, so future fees land in Churning too.'}
             </p>
           </div>
-          <Button size="sm" disabled={busy} onClick={() => ensure.mutate(undefined, { onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not set up') })}>
-            Set up
+          <Button
+            size="sm"
+            disabled={busy}
+            onClick={() =>
+              setUp.mutate(undefined, {
+                onSuccess: (r) =>
+                  toast.success(r.moved ? `Moved ${r.moved} transactions into Churning (${r.annualFees} annual fees)` : 'Churning is set up'),
+                onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not set up'),
+              })
+            }
+          >
+            {setUp.isPending ? 'Setting up…' : 'Set up'}
           </Button>
         </section>
       )}

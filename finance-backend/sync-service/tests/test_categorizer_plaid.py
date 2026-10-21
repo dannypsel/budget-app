@@ -138,3 +138,20 @@ def test_ai_never_offered_churning_categories():
         {"id": "rest", "name": "Restaurants", "parent_id": "din"},
     ]
     assert [c["id"] for c in _without_churning(cats)] == ["din", "rest"]
+
+
+def test_bank_fees_go_to_churning_once_set_up():
+    from categorizer import churning_ids
+    cats = [{"id": "ch", "name": "Churning", "parent_id": None},
+            {"id": "af", "name": "Annual Fees", "parent_id": "ch"},
+            {"id": "cc", "name": "Card Credits", "parent_id": "ch"}]
+    ids = churning_ids(cats)
+    assert ids == {"root": "ch", "annual_fees": "af", "card_credits": "cc"}
+    ctx = {**CTX, "churn_id": "ch", "churn_fee_id": "af"}
+    late = {"account_id": "card-1", "merchant_name": None, "description": "Late Fee",
+            "amount": 39.0, "plaid_category": "BANK_FEES"}
+    annual = {**late, "description": "Annual Fee"}
+    dinner = {**late, "description": "Dinner", "plaid_category": "FOOD_AND_DRINK"}
+    apply_learned([late, annual, dinner], ctx, {"card-1": "credit"})
+    assert (late["category_id"], annual["category_id"], dinner["category_id"]) == ("ch", "af", "cat-dining")
+    assert churning_ids([])["root"] is None

@@ -175,18 +175,26 @@ def load_guess_context(user_id: str) -> dict:
                          extra={'user_id': user_id})
         tag_memory = {}
 
-    churning = next((c for c in top if c['name'].strip().lower() == 'churning'), None)
-    churn_fee_id = next(
-        (c['id'] for c in active
-         if churning and c.get('parent_id') == churning['id']
-         and c['name'].strip().lower() == 'annual fees'),
-        None,
-    )
+    churn = churning_ids(active)
 
     return {'rules': rules, 'memory': memory, 'income_id': income_id,
-            'churn_fee_id': churn_fee_id,
+            'churn_id': churn['root'], 'churn_fee_id': churn['annual_fees'],
             'cat_names': cat_names, 'tag_memory': tag_memory,
             'cat_ids_by_name': {c['name']: c['id'] for c in active if c.get('id')}}
+
+
+def churning_ids(categories: list[dict]) -> dict:
+    """The user's Churning category and its Annual Fees / Card Credits
+    subcategories (None when absent) — see web/src/lib/churningMoney.ts."""
+    root = next((c for c in categories if not c.get('parent_id')
+                 and (c.get('name') or '').strip().lower() == 'churning'), None)
+
+    def sub(name: str):
+        return next((c['id'] for c in categories if root and c.get('parent_id') == root['id']
+                     and (c.get('name') or '').strip().lower() == name), None)
+
+    return {'root': root['id'] if root else None,
+            'annual_fees': sub('annual fees'), 'card_credits': sub('card credits')}
 
 
 def fill_txn_tags(rows: list[dict], ctx: dict) -> list[dict]:
@@ -290,14 +298,16 @@ def apply_learned(transactions: list[dict], ctx: dict, acct_types: dict = None) 
     `acct_types` maps account_id (uuid) → account type, used to auto-flag credit-
     card refunds as reimbursements (see `_is_card_refund`).
 
-    Once the user has set up Churning › Annual Fees, a card's annual fee goes
-    there ahead of every other signal: churning is excluded from spending, and a
-    bank's "fees" category would otherwise count it as spend."""
+    Once the user has set up Churning, fees go there ahead of every other
+    signal (a card's annual fee to Churning › Annual Fees, any other Plaid
+    BANK_FEES row to Churning): churning is excluded from spending, and the
+    user files all fees & charges under it."""
     memory = ctx['memory']
     rules = ctx['rules']
     income_id = ctx['income_id']
     cat_ids_by_name = ctx.get('cat_ids_by_name') or {}
     churn_fee_id = ctx.get('churn_fee_id')
+    churn_id = ctx.get('churn_id')
 
     for txn in transactions:
         # The most specific (longest-keyword) rule whose conditions all pass wins;
@@ -316,6 +326,8 @@ def apply_learned(transactions: list[dict], ctx: dict, acct_types: dict = None) 
             key = _merchant_key(txn)
             if churn_fee_id and _is_card_annual_fee(txn, acct_types):
                 txn['category_id'] = churn_fee_id
+            elif churn_id and (txn.get('plaid_category') or '').upper() == 'BANK_FEES':
+                txn['category_id'] = churn_id
             elif plaid_name and cat_ids_by_name.get(plaid_name):
                 txn['category_id'] = cat_ids_by_name[plaid_name]
             elif key and key in memory:

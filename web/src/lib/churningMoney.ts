@@ -16,7 +16,10 @@ export const CHURNING_SUBCATEGORIES: { name: string; kind: Category['kind'] }[] 
   { name: ANNUAL_FEES, kind: 'spend' },
   { name: 'Credit Sales', kind: 'income' },
   { name: 'Bonuses & Referrals', kind: 'income' },
+  { name: 'Card Credits', kind: 'income' },
 ]
+
+export const FEES_AND_CHARGES = 'Fees & Charges'
 
 /** The top-level Churning category, if the user has one. */
 export function churningRoot(categories: Category[]): Category | null {
@@ -25,7 +28,17 @@ export function churningRoot(categories: Category[]): Category | null {
 
 /** Ids of Churning and every category beneath it. */
 export function churningCategoryIds(categories: Category[]): Set<UUID> {
-  const root = churningRoot(categories)
+  return subtreeIds(churningRoot(categories), categories)
+}
+
+/** Ids of the top-level "Fees & Charges" and its subcategories — everything the
+ *  churning setup folds into Churning. */
+export function feesAndChargesIds(categories: Category[]): Set<UUID> {
+  const root = categories.find((c) => !c.parent_id && c.name.trim().toLowerCase() === FEES_AND_CHARGES.toLowerCase()) ?? null
+  return subtreeIds(root, categories)
+}
+
+function subtreeIds(root: Category | null, categories: Category[]): Set<UUID> {
   const ids = new Set<UUID>()
   if (!root) return ids
   ids.add(root.id)
@@ -109,6 +122,12 @@ export const ANNUAL_FEE_PATTERN = /\b(annual|membership|renewal)\s+(membership\s
 
 /** Annual-fee rows on credit cards that aren't in Churning yet — the "move these
  *  in" suggestions. Transfers and hidden rows are never suggested. */
+/** Card annual-fee text on a credit account (any sign: fees and their reversals). */
+export function isCardAnnualFee(t: Pick<Transaction, 'account_id' | 'description' | 'merchant_name' | 'original_description'>, accountsById: Map<UUID, Account>): boolean {
+  if (accountsById.get(t.account_id)?.type !== 'credit') return false
+  return ANNUAL_FEE_PATTERN.test([t.original_description, t.description, t.merchant_name].filter(Boolean).join(' '))
+}
+
 export function annualFeeCandidates(
   txns: Transaction[],
   categories: Category[],
@@ -118,8 +137,6 @@ export function annualFeeCandidates(
   return txns.filter((t) => {
     if (t.hidden || isTransfer(t)) return false
     if (t.category_id != null && ids.has(t.category_id)) return false
-    if (accountsById.get(t.account_id)?.type !== 'credit') return false
-    const text = [t.original_description, t.description, t.merchant_name].filter(Boolean).join(' ')
-    return ANNUAL_FEE_PATTERN.test(text)
+    return isCardAnnualFee(t, accountsById)
   })
 }

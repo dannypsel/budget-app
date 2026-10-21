@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { annualFeeCandidates, annualFeesCategory, churningCategoryIds, churningSummary } from './churningMoney'
+import { annualFeeCandidates, annualFeesCategory, churningCategoryIds, churningSummary, feesAndChargesIds } from './churningMoney'
 import { flowOf } from './classify'
 import { applyExcludes } from './reports'
 import { makeTxn } from '@/test/factories'
@@ -92,5 +92,14 @@ describe('annualFeeCandidates', () => {
       makeTxn({ amount: 95, description: 'Annual Fee', account_id: 'a-amex', transfer_group_id: 'g1' }),
     ]
     expect(annualFeeCandidates(rows, categories, accountsById).map((t) => t.id)).toEqual([hit.id, hit2.id])
+  })
+})
+
+describe('feesAndChargesIds', () => {
+  it('covers Fees & Charges and its subcategories only', () => {
+    const atm = cat('c-atm', 'ATM Fee', 'c-fc')
+    const ids = feesAndChargesIds([...categories, atm])
+    expect([...ids].sort()).toEqual(['c-atm', 'c-fc'])
+    expect(feesAndChargesIds([churning, fees]).size).toBe(0)
   })
 })

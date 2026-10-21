@@ -1547,7 +1547,9 @@ function ReportTab({
   const canSave = FILTERED_REPORTS.includes(tab.report)
 
   return (
-    <div hidden={hidden} className="flex flex-col gap-6">
+    // `hidden` alone loses to the `flex` utility (display:flex), which stacked every
+    // open tab on the page — drop the layout classes too.
+    <div hidden={hidden} className={hidden ? 'hidden' : 'flex flex-col gap-6'}>
       <div className="flex flex-wrap items-start gap-3">
         <div className="min-w-0">
           <h2 className="text-2xl font-semibold tracking-tight text-foreground">{savedAs?.name ?? REPORT_TITLES[tab.report]}</h2>

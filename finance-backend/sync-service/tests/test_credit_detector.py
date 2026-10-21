@@ -598,3 +598,26 @@ def _stub_auth(sb, email="user@example.com"):
         admin=types.SimpleNamespace(
             get_user_by_id=lambda uid: types.SimpleNamespace(
                 user=types.SimpleNamespace(email=email))))
+
+
+def test_detected_credits_filed_under_churning_card_credits():
+    from unittest.mock import MagicMock
+
+    from credit_detector import file_card_credits
+    sb = MagicMock()
+    cats = [{"id": "ch", "name": "Churning", "parent_id": None},
+            {"id": "cc", "name": "Card Credits", "parent_id": "ch"}]
+    sb.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = cats
+    file_card_credits(sb, "u1", {"t2", "t1"})
+    sb.table.return_value.update.assert_called_once_with({"category_id": "cc", "is_reimbursement": False})
+    sb.table.return_value.update.return_value.eq.return_value.in_.assert_called_once_with("id", ["t1", "t2"])
+
+
+def test_no_card_credits_category_means_no_update():
+    from unittest.mock import MagicMock
+
+    from credit_detector import file_card_credits
+    sb = MagicMock()
+    sb.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = []
+    file_card_credits(sb, "u1", {"t1"})
+    sb.table.return_value.update.assert_not_called()
