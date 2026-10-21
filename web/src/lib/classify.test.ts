@@ -12,10 +12,12 @@ describe('flowOf (Simplifi: category type decides, never the sign)', () => {
     expect(flowTotals([makeTxn({ amount: 100, categories: groceries }), t])).toEqual({ spend: 80, income: 0 })
   })
 
-  it('income categories are income; a debit on one reduces income', () => {
+  it('inflows on income categories are income; an outflow is never income', () => {
     expect(flowOf(makeTxn({ amount: -1000, categories: paycheck }))).toBe('income')
+    // e.g. Collin County Tax Office $6,115.08 miscategorized as Income still counts as spending
+    expect(flowOf(makeTxn({ amount: 6115.08, categories: paycheck }))).toBe('spend')
     expect(flowTotals([makeTxn({ amount: -1000, categories: paycheck }), makeTxn({ amount: 50, categories: paycheck })]))
-      .toEqual({ spend: 0, income: 950 })
+      .toEqual({ spend: 50, income: 1000 })
   })
 
   it('transfers are never spending or income', () => {

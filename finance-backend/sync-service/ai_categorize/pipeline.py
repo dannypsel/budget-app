@@ -115,7 +115,7 @@ def _active_categories(supabase, user_id: str) -> list[dict]:
     try:
         return (
             supabase.table("categories")
-            .select("id, name")
+            .select("id, name, kind")
             .eq("user_id", user_id)
             .eq("is_active", True)
             .execute()
@@ -125,6 +125,17 @@ def _active_categories(supabase, user_id: str) -> list[dict]:
     except Exception:
         logger.exception("ai pipeline: failed to load categories", extra={"user_id": user_id})
         return []
+
+
+def _income_on_outflow(txn: dict, category_id: str, income_ids: set) -> bool:
+    """The standing rule (commit 8286b37): an outflow is never Income. The
+    merchant cache is keyed by merchant alone, so a verdict learned from a
+    money-in row (a Venmo payout) must not stamp Income on that merchant's
+    payments."""
+    try:
+        return category_id in income_ids and float(txn.get("amount") or 0) > 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _uncategorized_txns(supabase, user_id: str, limit: int) -> tuple[list[dict], dict]:
@@ -338,10 +349,12 @@ def _run(supabase, user_id: str, stats: dict) -> dict:
         stats["status"] = "no_categories"
         return stats
     cat_ids = {c["id"] for c in categories}
+    income_ids = {c["id"] for c in categories if c.get("kind") == "income"}
     # One-line hints shown to the classifier alongside each category name.
     # Measured +2pts on a 200-transaction held-out eval (2026-10-01); the
     # verdict still comes back as the category id, so this is display-only.
     cat_choices = [(c["id"], _category_label(c["name"])) for c in categories]
+    outflow_choices = [ch for ch in cat_choices if ch[0] not in income_ids]
     # Auto-classification context: category-id -> name (for the static
     # category defaults) + the merchant tag memory (overrides defaults).
     tag_ctx = {
@@ -381,7 +394,11 @@ def _run(supabase, user_id: str, stats: dict) -> dict:
     for txn in remaining:
         key = _merchant_key(txn)
         hit = cache.get(key) if key else None
-        if hit and hit.get("category_id") in cat_ids:
+        if (
+            hit
+            and hit.get("category_id") in cat_ids
+            and not _income_on_outflow(txn, hit["category_id"], income_ids)
+        ):
             stats["from_cache"] += 1
             try:
                 _apply_verdict(
@@ -415,7 +432,10 @@ def _run(supabase, user_id: str, stats: dict) -> dict:
         stats["needs_review"] += len(still)
         return stats
     assert provider is not None  # 'off' handled above
-    items = [(t["id"], _state_text(t), cat_choices) for t in still]
+    def choices_for(t: dict) -> list:
+        return outflow_choices if float(t.get("amount") or 0) > 0 else cat_choices
+
+    items = [(t["id"], _state_text(t), choices_for(t)) for t in still]
     verdicts = classify_concurrent(provider, items)
 
     # ── 4. low confidence -> Brave enrich -> ONE re-classify ─────────────
@@ -440,7 +460,7 @@ def _run(supabase, user_id: str, stats: dict) -> dict:
             merchant = txn.get("merchant_name") or txn.get("description") or ""
             blurb = lookup_merchant(merchant)
             if blurb:
-                re_items.append((txn["id"], _state_text(txn, enrichment=blurb), cat_choices))
+                re_items.append((txn["id"], _state_text(txn, enrichment=blurb), choices_for(txn)))
         if re_items:
             re_verdicts = classify_concurrent(provider, re_items)
             re_by_id = {tid: v for (tid, _s, _c), v in zip(re_items, re_verdicts, strict=True)}
@@ -449,7 +469,12 @@ def _run(supabase, user_id: str, stats: dict) -> dict:
     # ── 5. apply or leave for review ─────────────────────────────────────
     for txn, verdict in zip(still, verdicts, strict=True):
         cid = verdict.category_id
-        if cid and cid in cat_ids and verdict.confidence >= threshold:
+        if (
+            cid
+            and cid in cat_ids
+            and verdict.confidence >= threshold
+            and not _income_on_outflow(txn, cid, income_ids)
+        ):
             stats["ai_applied"] += 1
             try:
                 _apply_verdict(supabase, txn, cid, verdict.confidence, provider.name, tag_ctx)

@@ -7,9 +7,10 @@
 //   transfer  linked transfer leg, or Plaid PFC transfer category
 //   excluded  user-excluded (exclude_from_totals / hidden) or a category that is
 //             excluded from reports
-//   income    category kind 'income'; uncategorized inflows (income-by-sign)
-//   spend     every other categorized row and uncategorized outflows. A credit on
-//             a spend category (refund, reimbursement) is negative spend.
+//   income    inflows on an income category; uncategorized inflows (income-by-sign)
+//   spend     every other row. A credit on a spend category (refund,
+//             reimbursement) is negative spend; an outflow is never income
+//             (the standing rule, commit 8286b37), even on an income category.
 
 import { isTransfer, isTransferCategory, type Category, type Transaction } from '@/types/domain'
 
@@ -20,7 +21,7 @@ export function flowOf(t: Transaction, category: Category | null | undefined = t
   if (t.exclude_from_totals || t.hidden) return 'excluded'
   if (category?.exclude_from_reports) return 'excluded'
   if (category) {
-    if (category.kind === 'income' && !t.is_reimbursement) return 'income'
+    if (category.kind === 'income' && !t.is_reimbursement && t.amount <= 0) return 'income'
     return 'spend'
   }
   if (isTransferCategory(t)) return 'transfer'

@@ -515,3 +515,73 @@ def test_jev_live_smoke():
         1 for (tid, _s, _c), v in zip(items, out, strict=True) if v.category_id == expected[tid]
     )
     assert hits >= 3, f"only {hits}/4 live classifications matched expected"
+
+
+# ── pipeline: an outflow is never Income (standing rule, commit 8286b37) ──
+
+
+def _with_income_cat(**overrides):
+    sb = _sb(**overrides)
+    sb.tables["categories"].append(
+        {"id": "cat-income", "user_id": USER, "name": "Income", "kind": "income", "is_active": True}
+    )
+    return sb
+
+
+def test_income_cache_hit_never_applies_to_an_outflow(monkeypatch, sb_ctx):
+    """The cache is keyed by merchant: a Venmo payout learned as Income must
+    not stamp Income on a Venmo payment out — it falls through to the model,
+    which is not offered Income for an outflow."""
+    sb = sb_ctx(
+        _with_income_cat(
+            transactions=[_txn("t1", "Venmo", amount=249.54)],
+            ai_category_cache=[
+                {"user_id": USER, "merchant_key": "venmo", "category_id": "cat-income",
+                 "confidence": 0.95, "source": "jev"}
+            ],
+        )
+    )
+    monkeypatch.setenv("JEV_API_KEY", "k")
+    offered = []
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        offered.append(json)
+        return _Resp(_jev_answers({"t1": 0.9}, {"t1": "cat-groceries"}))
+
+    monkeypatch.setattr("ai_categorize.providers.requests.post", fake_post)
+    stats = run_ai_categorization(sb, USER)
+    assert stats["from_cache"] == 0
+    txn = sb.tables["transactions"][0]
+    assert txn["category_id"] == "cat-groceries"
+    assert "cat-income" not in str(offered)
+
+
+def test_model_income_verdict_on_outflow_goes_to_review(monkeypatch, sb_ctx):
+    sb = sb_ctx(_with_income_cat(transactions=[_txn("t1", "Collin County Tax Office", amount=6115.08)]))
+    monkeypatch.setenv("JEV_API_KEY", "k")
+    monkeypatch.setattr(
+        "ai_categorize.providers.requests.post",
+        lambda url, headers=None, json=None, timeout=None: _Resp(
+            _jev_answers({"t1": 0.99}, {"t1": "cat-income"})
+        ),
+    )
+    stats = run_ai_categorization(sb, USER)
+    assert stats["ai_applied"] == 0
+    assert stats["needs_review"] == 1
+    assert sb.tables["transactions"][0]["category_id"] is None
+    assert sb.tables["ai_category_cache"] == []
+
+
+def test_income_cache_hit_still_applies_to_money_in(monkeypatch, sb_ctx):
+    sb = sb_ctx(
+        _with_income_cat(
+            transactions=[_txn("t1", "Venmo", amount=-500.0)],
+            ai_category_cache=[
+                {"user_id": USER, "merchant_key": "venmo", "category_id": "cat-income",
+                 "confidence": 0.95, "source": "jev"}
+            ],
+        )
+    )
+    run_ai_categorization(sb, USER)
+    # Money in stays Income (income-by-sign in the rules step gets there first).
+    assert sb.tables["transactions"][0]["category_id"] == "cat-income"
