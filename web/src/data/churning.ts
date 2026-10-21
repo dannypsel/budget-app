@@ -229,8 +229,9 @@ export async function detectCreditsAfterImport(): Promise<number> {
 /** Net qualifying spend on the card's linked account inside the bonus window:
  *  outflows minus reimbursements/refunds (bill payments are neither), with
  *  the card's annual-fee charge always excluded.
- *  Same exclusions as every spend total, plus pending rows (authorizations
- *  are not spend yet). */
+ *  Same exclusions as every spend total. Pending charges count, as in
+ *  Simplifi: Plaid replaces a pending row with its posted twin, so nothing
+ *  is counted twice. */
 export async function fetchQualifyingSpend(opts: {
   accountId: UUID
   startDate: string // yyyy-MM-dd, inclusive
@@ -245,7 +246,6 @@ export async function fetchQualifyingSpend(opts: {
     .lte('effective_date', opts.endDate)
     .eq('exclude_from_totals', false)
     .is('transfer_group_id', null)
-    .eq('pending', false)
   if (error) throw error
   return netQualifyingSpend(
     (data ?? []) as {
@@ -269,8 +269,8 @@ export interface QualifyingWindow {
 }
 
 /** Qualifying spend for several (account, window) pairs with the same
- *  exclusions as fetchQualifyingSpend (net of reimbursements, no pending,
- *  annual-fee charge excluded).
+ *  exclusions as fetchQualifyingSpend (net of reimbursements, pending
+ *  included, annual-fee charge excluded).
  *  One query per distinct account covers the union of its windows;
  *  per-window sums are computed client-side. Returns a map from the
  *  caller's key → qualifying spend (0 when unknown). */
@@ -301,8 +301,7 @@ export async function fetchQualifyingSpendBatch(
       .lte('effective_date', end)
       .eq('exclude_from_totals', false)
       .is('transfer_group_id', null)
-      .eq('pending', false)
-    if (error) throw error
+      if (error) throw error
     const rows = (data ?? []) as {
       amount: number | string
       effective_date: string

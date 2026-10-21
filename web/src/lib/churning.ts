@@ -224,7 +224,7 @@ export function isAnnualFeeCharge(
  *  minus reimbursements/refunds (money-in that is not a bill payment),
  *  with the card's annual-fee charge always excluded.
  *  The caller pre-filters to the card's linked account + bonus window and
- *  drops pending / excluded / transfer-leg rows. Never negative. */
+ *  drops excluded / transfer-leg rows. Never negative. */
 export function netQualifyingSpend(
   rows: {
     amount: number | string
