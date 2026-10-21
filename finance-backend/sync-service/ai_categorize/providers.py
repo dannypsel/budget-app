@@ -104,15 +104,13 @@ class JevProvider(ClassifierProvider):
 
     def _classify_call(self, batch) -> list[Classification]:
         # criteria keys ARE the category ids — the winner comes back verbatim.
-        criteria: dict[str, str] = {}
-        for _tid, _state, cats in batch:
-            for cid, label in cats:
-                criteria[cid] = label
-        if len(criteria) > JEV_MAX_CHOICES:
-            raise ValueError(f"{len(criteria)} categories exceeds Jev 255-choice cap")
-
+        # Each question gets its OWN choices: a batch mixes money in and money
+        # out, and an outflow must never be offered Income.
         questions = {}
-        for txn_id, _state, _cats in batch:
+        for txn_id, _state, cats in batch:
+            criteria = {cid: label for cid, label in cats}
+            if len(criteria) > JEV_MAX_CHOICES:
+                raise ValueError(f"{len(criteria)} categories exceeds Jev 255-choice cap")
             questions[f"txn_{txn_id}"] = {
                 "type": "choice",
                 "instructions": (

@@ -585,3 +585,20 @@ def test_income_cache_hit_still_applies_to_money_in(monkeypatch, sb_ctx):
     run_ai_categorization(sb, USER)
     # Money in stays Income (income-by-sign in the rules step gets there first).
     assert sb.tables["transactions"][0]["category_id"] == "cat-income"
+
+
+def test_jev_questions_carry_their_own_choices(monkeypatch):
+    """A batch mixing money in and money out must not leak Income into the
+    outflow's question via a shared criteria map."""
+    sent = {}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        sent.update(json)
+        return _Resp({"answers": {}})
+
+    monkeypatch.setattr("ai_categorize.providers.requests.post", fake_post)
+    out_cats = [("cat-groceries", "Groceries")]
+    in_cats = [("cat-groceries", "Groceries"), ("cat-income", "Income")]
+    JevProvider(api_key="k").classify_batch([("out", "s", out_cats), ("in", "s", in_cats)])
+    assert set(sent["questions"]["txn_out"]["criteria"]) == {"cat-groceries"}
+    assert set(sent["questions"]["txn_in"]["criteria"]) == {"cat-groceries", "cat-income"}
