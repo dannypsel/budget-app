@@ -65,7 +65,7 @@ echo "▸ sync-service on :8000…"
   SUPABASE_URL="$SUPABASE_URL" \
   SUPABASE_SECRET_KEY="$SUPABASE_SECRET_KEY" \
   CREDENTIALS_ENC_KEY="$CREDENTIALS_ENC_KEY" \
-  "$UVICORN" api:app --host 0.0.0.0 --port 8000) &
+  "$UVICORN" api:app --host 127.0.0.1 --port 8000) &
 
 echo "▸ web on :5173…"
 (cd web && \
