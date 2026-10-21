@@ -127,31 +127,6 @@ export function useUpsertCategory() {
   })
 }
 
-/** One-click churning setup (data/categories.setUpChurning): Churning categories,
- *  Fees & Charges folded in and archived. */
-export function useSetUpChurning() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: cats.setUpChurning,
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: sbKeys.categories })
-      qc.invalidateQueries({ queryKey: ['sb', 'transactions'] })
-    },
-  })
-}
-
-/** Set up Churning › Annual Fees / Credit Sales / Bonuses & Referrals / Card Credits (excluded from reports). */
-export function useEnsureChurningCategories() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: cats.ensureChurningCategories,
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: sbKeys.categories })
-      qc.invalidateQueries({ queryKey: ['sb', 'transactions'] })
-    },
-  })
-}
-
 /** Persist a new category display order (drag-to-reorder). Writes sort_order per row,
  *  then refreshes the categories cache so every picker/list reflects the new order. */
 export function useReorderCategories() {

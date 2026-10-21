@@ -1,25 +1,16 @@
 // Churning money: annual fees paid vs. money made (credits sold, bonuses,
 // referrals). Churning lives under its own top-level "Churning" category whose
 // categories are excluded from reports, so it never distorts "where our money
-// goes" — this module is the one place that adds it back up.
+// goes" — this module is the one place that adds it back up. The categories
+// and the Fees & Charges move are set up by SQL; sync files new fees, annual
+// fees and detected card credits there (finance-backend categorizer).
 //
 // Sign convention: amount > 0 = outflow, amount < 0 = inflow.
 
-import { isTransfer, type Account, type Category, type Transaction, type UUID } from '@/types/domain'
+import { type Account, type Category, type Transaction, type UUID } from '@/types/domain'
 
 export const CHURNING_ROOT = 'Churning'
 export const ANNUAL_FEES = 'Annual Fees'
-
-/** The subcategories set up under Churning. Kind only guides pickers — the
- *  churning totals go by sign. */
-export const CHURNING_SUBCATEGORIES: { name: string; kind: Category['kind'] }[] = [
-  { name: ANNUAL_FEES, kind: 'spend' },
-  { name: 'Credit Sales', kind: 'income' },
-  { name: 'Bonuses & Referrals', kind: 'income' },
-  { name: 'Card Credits', kind: 'income' },
-]
-
-export const FEES_AND_CHARGES = 'Fees & Charges'
 
 /** The top-level Churning category, if the user has one. */
 export function churningRoot(categories: Category[]): Category | null {
@@ -28,17 +19,7 @@ export function churningRoot(categories: Category[]): Category | null {
 
 /** Ids of Churning and every category beneath it. */
 export function churningCategoryIds(categories: Category[]): Set<UUID> {
-  return subtreeIds(churningRoot(categories), categories)
-}
-
-/** Ids of the top-level "Fees & Charges" and its subcategories — everything the
- *  churning setup folds into Churning. */
-export function feesAndChargesIds(categories: Category[]): Set<UUID> {
-  const root = categories.find((c) => !c.parent_id && c.name.trim().toLowerCase() === FEES_AND_CHARGES.toLowerCase()) ?? null
-  return subtreeIds(root, categories)
-}
-
-function subtreeIds(root: Category | null, categories: Category[]): Set<UUID> {
+  const root = churningRoot(categories)
   const ids = new Set<UUID>()
   if (!root) return ids
   ids.add(root.id)
@@ -114,29 +95,4 @@ export function churningSummary(
   }
   const sorted = (m: Map<string, ChurningLine>) => [...m.values()].sort((x, y) => x.net - y.net || x.label.localeCompare(y.label))
   return { fees, earned, net: earned - fees, bySubcategory: sorted(sub), byAccount: sorted(acct), txns: rows }
-}
-
-/** Card annual fees by statement text: "Annual Fee", "Annual Membership Fee",
- *  "Membership Fee Xxxx1007", "Renewal fee"… (and their reversals). */
-export const ANNUAL_FEE_PATTERN = /\b(annual|membership|renewal)\s+(membership\s+)?fee\b|\bannual\s+card\s*member\s+fee\b/i
-
-/** Annual-fee rows on credit cards that aren't in Churning yet — the "move these
- *  in" suggestions. Transfers and hidden rows are never suggested. */
-/** Card annual-fee text on a credit account (any sign: fees and their reversals). */
-export function isCardAnnualFee(t: Pick<Transaction, 'account_id' | 'description' | 'merchant_name' | 'original_description'>, accountsById: Map<UUID, Account>): boolean {
-  if (accountsById.get(t.account_id)?.type !== 'credit') return false
-  return ANNUAL_FEE_PATTERN.test([t.original_description, t.description, t.merchant_name].filter(Boolean).join(' '))
-}
-
-export function annualFeeCandidates(
-  txns: Transaction[],
-  categories: Category[],
-  accountsById: Map<UUID, Account>,
-): Transaction[] {
-  const ids = churningCategoryIds(categories)
-  return txns.filter((t) => {
-    if (t.hidden || isTransfer(t)) return false
-    if (t.category_id != null && ids.has(t.category_id)) return false
-    return isCardAnnualFee(t, accountsById)
-  })
 }

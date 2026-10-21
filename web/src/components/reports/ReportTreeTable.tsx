@@ -2,7 +2,8 @@
 // "Tax detail"): group ▸ category ▸ transactions with "Total X" subtotal rows.
 // Rows come from lib/reportTree.flattenTree.
 
-import { useMemo, useState, type ReactNode } from 'react'
+import { useMemo, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useOpenTransaction } from '@/components/finance/transactionDialog'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { flattenTree, type TreeNode } from '@/lib/reportTree'
 import { formatCurrency } from '@/lib/money'
@@ -34,6 +35,7 @@ export function ReportTreeTable({
   headerRight?: ReactNode
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const openTxn = useOpenTransaction()
   const rows = useMemo(
     () => flattenTree(root, collapsed).filter((r) => !(summaryOnly && r.kind === 'txn')),
     [root, collapsed, summaryOnly],
@@ -128,7 +130,21 @@ export function ReportTreeTable({
               const t = r.txn
               const tags = txnTags(t).map((x) => x.name)
               return (
-                <tr key={`x-${t.id}-${i}`} className="text-muted-foreground">
+                <tr
+                  key={`x-${t.id}-${i}`}
+                  className={cn('text-muted-foreground', openTxn && 'cursor-pointer hover:bg-accent focus-visible:bg-accent focus-visible:outline-none')}
+                  {...(openTxn && {
+                    tabIndex: 0,
+                    'aria-label': `Open ${displayName(t)}`,
+                    onClick: () => openTxn(t),
+                    onKeyDown: (e: KeyboardEvent) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        openTxn(t)
+                      }
+                    },
+                  })}
+                >
                   <td className="py-1.5 pr-3">
                     <span style={pad} className="block truncate">
                       {t.categories?.name ?? 'Uncategorized'}

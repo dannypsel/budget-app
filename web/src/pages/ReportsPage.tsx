@@ -109,6 +109,8 @@ import ForecastSection from '@/components/reports/ForecastSection'
 import { ReportTreeTable } from '@/components/reports/ReportTreeTable'
 import { BalanceReport } from '@/components/reports/BalanceReport'
 import { ChurningReport } from '@/components/reports/ChurningReport'
+import { TransactionDialogProvider } from '@/components/finance/TransactionDialogProvider'
+import { useOpenTransaction } from '@/components/finance/transactionDialog'
 import { buildCategoryTree, buildGroupTree, buildTaxTree, findNode, type TreeNode } from '@/lib/reportTree'
 
 type ReportId =
@@ -1134,6 +1136,7 @@ function MonthlySummaryReport() {
     () => groupFlow(txns, 'income', 'merchant', accountsById).slice(0, 5),
     [txns, accountsById],
   )
+  const openTxn = useOpenTransaction()
   const largest = useMemo(
     () => [...txns].sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount)).slice(0, 5),
     [txns],
@@ -1229,7 +1232,11 @@ function MonthlySummaryReport() {
             ) : (
               <ul className="divide-y divide-border">
                 {largest.map((t) => (
-                  <li key={t.id} className="flex items-center gap-3 py-2.5 text-sm">
+                  <li
+                    key={t.id}
+                    className={cn('flex items-center gap-3 py-2.5 text-sm', openTxn && 'cursor-pointer hover:bg-accent')}
+                    onClick={openTxn ? () => openTxn(t) : undefined}
+                  >
                     <span className="w-16 shrink-0 text-muted-foreground">
                       {shortDate(t.date)}
                     </span>
@@ -1667,6 +1674,7 @@ export default function ReportsPage() {
   }
 
   return (
+    <TransactionDialogProvider>
     <div className="flex flex-col gap-6 pt-4 md:pt-6">
       <h1 className="text-2xl font-semibold tracking-tight text-foreground">Reports</h1>
       <UnderlineTabs
@@ -1723,5 +1731,6 @@ export default function ReportsPage() {
         <ReportTab key={t.key} tab={t} hidden={active !== t.key} onSave={saveTab} onDeleteSaved={deleteSaved} />
       ))}
     </div>
+    </TransactionDialogProvider>
   )
 }

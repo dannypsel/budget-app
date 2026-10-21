@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { annualFeeCandidates, annualFeesCategory, churningCategoryIds, churningSummary, feesAndChargesIds } from './churningMoney'
+import { annualFeesCategory, churningCategoryIds, churningSummary } from './churningMoney'
 import { flowOf } from './classify'
 import { applyExcludes } from './reports'
 import { makeTxn } from '@/test/factories'
@@ -76,30 +76,5 @@ describe('churning is excluded from spending and reports', () => {
     const t = makeTxn({ amount: 695, category_id: 'c-fee', categories: fees })
     expect(flowOf(t)).toBe('excluded')
     expect(applyExcludes([t], { excludeTransfers: true, excludeIgnored: true })).toEqual([])
-  })
-})
-
-describe('annualFeeCandidates', () => {
-  it('finds card annual fees outside Churning, nothing else', () => {
-    const hit = makeTxn({ id: 'f1', amount: 95, description: 'Annual Membership Fee', account_id: 'a-amex', category_id: 'c-fc', categories: feesAndCharges })
-    const hit2 = makeTxn({ id: 'f2', amount: 895, description: 'Membership Fee Xxxx1007', account_id: 'a-amex' })
-    const rows = [
-      hit,
-      hit2,
-      makeTxn({ amount: 39, description: 'Late Fee', account_id: 'a-amex' }),
-      makeTxn({ amount: 95, description: 'Annual Fee', account_id: 'a-chk' }), // not a card
-      makeTxn({ amount: 695, description: 'Annual Fee', account_id: 'a-amex', category_id: 'c-fee', categories: fees }), // already churning
-      makeTxn({ amount: 95, description: 'Annual Fee', account_id: 'a-amex', transfer_group_id: 'g1' }),
-    ]
-    expect(annualFeeCandidates(rows, categories, accountsById).map((t) => t.id)).toEqual([hit.id, hit2.id])
-  })
-})
-
-describe('feesAndChargesIds', () => {
-  it('covers Fees & Charges and its subcategories only', () => {
-    const atm = cat('c-atm', 'ATM Fee', 'c-fc')
-    const ids = feesAndChargesIds([...categories, atm])
-    expect([...ids].sort()).toEqual(['c-atm', 'c-fc'])
-    expect(feesAndChargesIds([churning, fees]).size).toBe(0)
   })
 })

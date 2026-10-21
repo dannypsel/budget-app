@@ -3,34 +3,18 @@
 // every other report, so this is where that money shows up. Offers to move
 // annual-fee charges it finds elsewhere into Churning › Annual Fees.
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { toast } from 'sonner'
-import { CreditCard } from 'lucide-react'
-import {
-  useAccountsWithBalance,
-  useBulkSetCategoryByIds,
-  useCategories,
-  useEnsureChurningCategories,
-  useSetUpChurning,
-  useTransactionsRange,
-} from '@/data/hooks'
-import {
-  annualFeeCandidates,
-  annualFeesCategory,
-  churningRoot,
-  churningSummary,
-  feesAndChargesIds,
-  type ChurningLine,
-} from '@/lib/churningMoney'
+import { useAccountsWithBalance, useCategories, useTransactionsRange } from '@/data/hooks'
+import { useOpenTransaction } from '@/components/finance/transactionDialog'
+import { churningSummary, type ChurningLine } from '@/lib/churningMoney'
 import { categoryPath } from '@/lib/categoryTree'
 import { formatCurrency } from '@/lib/money'
 import { formatShortDate, toISODate } from '@/lib/dates'
 import { downloadCsv, rowsToCsv } from '@/lib/exportCsv'
 import { cn } from '@/lib/utils'
-import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { displayName, type Transaction } from '@/types/domain'
+import { displayName } from '@/types/domain'
 
 type ExportRef = { current: (() => void) | null }
 
@@ -90,15 +74,8 @@ export function ChurningReport({ start, end, exportRef }: { start: string; end: 
   const { data: accounts = [] } = useAccountsWithBalance()
   const accountsById = useMemo(() => new Map(accounts.map((a) => [a.id, a])), [accounts])
   const byId = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories])
-  const ensure = useEnsureChurningCategories()
-  const setUp = useSetUpChurning()
-  const bulkSet = useBulkSetCategoryByIds()
-  const [showAllCandidates, setShowAllCandidates] = useState(false)
-
+  const openTxn = useOpenTransaction()
   const summary = useMemo(() => churningSummary(txns, categories, accountsById), [txns, categories, accountsById])
-  const candidates = useMemo(() => annualFeeCandidates(txns, categories, accountsById), [txns, categories, accountsById])
-  const hasChurning = churningRoot(categories) != null
-  const hasFeesAndCharges = feesAndChargesIds(categories).size > 0
 
   useEffect(() => {
     exportRef.current = () =>
@@ -111,22 +88,6 @@ export function ChurningReport({ start, end, exportRef }: { start: string; end: 
       )
   })
 
-  async function moveCandidates(rows: Transaction[]) {
-    try {
-      const cats = await ensure.mutateAsync()
-      const fees = annualFeesCategory(cats)
-      if (!fees) throw new Error('Could not find Churning › Annual Fees')
-      await bulkSet.mutateAsync({ ids: rows.map((t) => t.id), categoryId: fees.id })
-      toast.success(`Moved ${rows.length} annual fee${rows.length === 1 ? '' : 's'} to Churning › Annual Fees`)
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Could not move annual fees')
-    }
-  }
-
-  const busy = ensure.isPending || bulkSet.isPending || setUp.isPending
-  const candidateTotal = candidates.reduce((s, t) => s + t.amount, 0)
-  const shownCandidates = showAllCandidates ? candidates : candidates.slice(0, 8)
-
   return (
     <div className="flex flex-col gap-6">
       <p className="text-xs text-muted-foreground">
@@ -134,73 +95,6 @@ export function ChurningReport({ start, end, exportRef }: { start: string; end: 
         sell, bonuses and referrals. Churning is excluded from spending, income and every other report, so they show where
         your money actually goes.
       </p>
-
-      {(!hasChurning || hasFeesAndCharges) && (
-        <section className="card-surface flex flex-col gap-3 border border-border p-4 sm:flex-row sm:items-center">
-          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-violet-100 text-violet-700">
-            <CreditCard className="h-5 w-5" aria-hidden />
-          </span>
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-semibold text-foreground">Set up Churning</p>
-            <p className="text-xs text-muted-foreground">
-              Adds Churning › Annual Fees, Credit Sales, Bonuses &amp; Referrals and Card Credits, all excluded from
-              reports. {hasFeesAndCharges && 'Moves every Fees & Charges transaction into Churning (annual fees to Annual Fees) and archives Fees & Charges, so future fees land in Churning too.'}
-            </p>
-          </div>
-          <Button
-            size="sm"
-            disabled={busy}
-            onClick={() =>
-              setUp.mutate(undefined, {
-                onSuccess: (r) =>
-                  toast.success(r.moved ? `Moved ${r.moved} transactions into Churning (${r.annualFees} annual fees)` : 'Churning is set up'),
-                onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not set up'),
-              })
-            }
-          >
-            {setUp.isPending ? 'Setting up…' : 'Set up'}
-          </Button>
-        </section>
-      )}
-
-      {candidates.length > 0 && (
-        <section className="card-surface border border-border p-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-semibold text-foreground">
-                {candidates.length} annual fee{candidates.length === 1 ? '' : 's'} counted as spending ({formatCurrency(candidateTotal)})
-              </p>
-              <p className="text-xs text-muted-foreground">
-                Move them to Churning › Annual Fees to take them out of your spending reports.
-              </p>
-            </div>
-            <Button size="sm" disabled={busy} onClick={() => void moveCandidates(candidates)}>
-              Move all to Churning
-            </Button>
-          </div>
-          <ul className="mt-3 divide-y divide-border text-sm">
-            {shownCandidates.map((t) => (
-              <li key={t.id} className="flex items-center gap-3 py-1.5">
-                <span className="w-16 shrink-0 text-xs text-muted-foreground">{formatShortDate(t.date)}</span>
-                <span className="min-w-0 flex-1 truncate">
-                  {displayName(t)}
-                  <span className="text-muted-foreground"> · {accountsById.get(t.account_id)?.name ?? 'Unknown account'}</span>
-                </span>
-                <span className="text-xs text-muted-foreground">{t.category_id ? categoryPath(byId.get(t.category_id), byId) : 'Uncategorized'}</span>
-                <Signed value={-t.amount} className="w-24 text-right" />
-                <button type="button" disabled={busy} onClick={() => void moveCandidates([t])} className="text-xs font-medium text-primary disabled:opacity-50">
-                  Move
-                </button>
-              </li>
-            ))}
-          </ul>
-          {candidates.length > shownCandidates.length && (
-            <button type="button" onClick={() => setShowAllCandidates(true)} className="mt-2 text-xs font-medium text-primary">
-              Show all {candidates.length}
-            </button>
-          )}
-        </section>
-      )}
 
       {isLoading ? (
         <p className="py-12 text-center text-sm text-muted-foreground">Loading transactions…</p>
@@ -243,7 +137,11 @@ export function ChurningReport({ start, end, exportRef }: { start: string; end: 
                     {[...summary.txns]
                       .sort((a, b) => b.date.localeCompare(a.date))
                       .map((t) => (
-                        <TableRow key={t.id}>
+                        <TableRow
+                          key={t.id}
+                          className={openTxn ? 'cursor-pointer' : undefined}
+                          onClick={openTxn ? () => openTxn(t) : undefined}
+                        >
                           <TableCell className="whitespace-nowrap text-muted-foreground">{formatShortDate(t.date)}</TableCell>
                           <TableCell className="font-medium">{displayName(t)}</TableCell>
                           <TableCell className="text-muted-foreground">{byId.get(t.category_id!)?.name ?? 'Churning'}</TableCell>
@@ -262,8 +160,8 @@ export function ChurningReport({ start, end, exportRef }: { start: string; end: 
       )}
 
       <p className="text-xs text-muted-foreground">
-        Sold a credit or got a bonus paid by Venmo, Zelle or PayPal? Open it in Transactions and pick Churning › Credit
-        Sales or Bonuses &amp; Referrals. If PocketLens linked it as a transfer, choose “Not a transfer — include in
+        Sold a credit or got a bonus paid by Venmo, Zelle or PayPal? Click it (here or in Transactions) and pick
+        Churning › Credit Sales or Bonuses &amp; Referrals. If PocketLens linked it as a transfer, choose “Not a transfer — include in
         reports” first.
       </p>
     </div>
@@ -279,7 +177,6 @@ export function ChurningMoneyCard() {
   const { data: accounts = [] } = useAccountsWithBalance()
   const accountsById = useMemo(() => new Map(accounts.map((a) => [a.id, a])), [accounts])
   const s = useMemo(() => churningSummary(txns, categories, accountsById), [txns, categories, accountsById])
-  const pending = useMemo(() => annualFeeCandidates(txns, categories, accountsById).length, [txns, categories, accountsById])
   return (
     <section aria-label="Churning money this year" className="card-surface flex flex-col gap-3 border border-border p-4 sm:flex-row sm:items-center">
       <div className="min-w-0 flex-1">
@@ -295,11 +192,6 @@ export function ChurningMoneyCard() {
             Net <Signed value={s.net} />
           </span>
         </p>
-        {pending > 0 && (
-          <p className="mt-1 text-xs text-muted-foreground">
-            {pending} annual fee{pending === 1 ? '' : 's'} still counted as spending — move them in the report.
-          </p>
-        )}
       </div>
       <Link to="/reports?open=churning" className="text-sm font-medium text-primary">
         View churning report

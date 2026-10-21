@@ -2,18 +2,8 @@
 // CategoryEditSheet upserts. Direct PostgREST via supabase-js.
 
 import { supabase } from '@/lib/supabase'
-import type { Account, Category, CategoryRule, RuleDirection, Transaction, UUID } from '@/types/domain'
+import type { Category, CategoryRule, RuleDirection, UUID } from '@/types/domain'
 import { logAddRule, logDeleteRule } from './activity'
-import {
-  ANNUAL_FEES,
-  CHURNING_ROOT,
-  CHURNING_SUBCATEGORIES,
-  churningCategoryIds,
-  churningRoot,
-  feesAndChargesIds,
-  isCardAnnualFee,
-} from '@/lib/churningMoney'
-import { AUTO_CATEGORIZE_CHUNK, chunk, fetchAllPages } from './transactions'
 
 /** Active categories for the signed-in user (archived ones excluded unless
  *  includeInactive is set). Archived categories keep their history but stop
@@ -58,79 +48,6 @@ export async function upsertCategory(
     .single()
   if (error) throw error
   return data as Category
-}
-
-/** Create Churning and its subcategories (whichever are missing) and exclude the
- *  whole subtree from reports. Idempotent. Returns the full category list. */
-export async function ensureChurningCategories(): Promise<Category[]> {
-  let all = await fetchCategories({ includeInactive: true })
-  let root = churningRoot(all)
-  if (!root) {
-    const sort = all.reduce((m, c) => Math.max(m, c.sort_order ?? 0), 0) + 1
-    root = await upsertCategory({ name: CHURNING_ROOT, color: '#8E4EC6', icon: 'creditcard.fill', kind: 'spend', sort_order: sort, exclude_from_reports: true })
-    all = [...all, root]
-  }
-  const missing = CHURNING_SUBCATEGORIES.filter(
-    (s) => !all.some((c) => c.parent_id === root!.id && c.name.trim().toLowerCase() === s.name.toLowerCase()),
-  )
-  if (missing.length) {
-    const { error } = await supabase.from('categories').insert(
-      missing.map((s, i) => ({ name: s.name, color: '#8E4EC6', icon: 'creditcard.fill', kind: s.kind, parent_id: root!.id, sort_order: i, exclude_from_reports: true })),
-    )
-    if (error) throw error
-    all = await fetchCategories({ includeInactive: true })
-  }
-  const ids = [...churningCategoryIds(all)]
-  const { error } = await supabase.from('categories').update({ exclude_from_reports: true, is_active: true }).in('id', ids)
-  if (error) throw error
-  return fetchCategories()
-}
-
-export interface ChurningSetupResult {
-  moved: number
-  annualFees: number
-}
-
-/** One-click churning setup: create Churning (excluded from reports), move every
- *  Fees & Charges transaction and split into it — card annual fees to Churning ›
- *  Annual Fees, the rest to Churning — point merchant memory and rules that used
- *  Fees & Charges at Churning, then archive Fees & Charges so new fees can only
- *  land in Churning. Idempotent: a second run finds nothing left to move. */
-export async function setUpChurning(): Promise<ChurningSetupResult> {
-  await ensureChurningCategories()
-  const all = await fetchCategories({ includeInactive: true })
-  const root = churningRoot(all)!
-  const feesId = all.find((c) => c.parent_id === root.id && c.name === ANNUAL_FEES)?.id ?? root.id
-  const feeIds = [...feesAndChargesIds(all)]
-  if (feeIds.length === 0) return { moved: 0, annualFees: 0 }
-
-  const { data: accts, error: acctErr } = await supabase.from('accounts').select('id, type')
-  if (acctErr) throw acctErr
-  const accountsById = new Map(((accts ?? []) as Account[]).map((a) => [a.id, a]))
-  const rows = (await fetchAllPages((from, to) =>
-    supabase
-      .from('transactions')
-      .select('id, account_id, description, merchant_name, original_description')
-      .in('category_id', feeIds)
-      .order('id')
-      .range(from, to),
-  )) as Pick<Transaction, 'id' | 'account_id' | 'description' | 'merchant_name' | 'original_description'>[]
-  const annual = rows.filter((t) => isCardAnnualFee(t, accountsById)).map((t) => t.id)
-  const annualSet = new Set(annual)
-  const other = rows.filter((t) => !annualSet.has(t.id)).map((t) => t.id)
-  for (const [ids, categoryId] of [[annual, feesId], [other, root.id]] as const) {
-    for (const batch of chunk(ids, AUTO_CATEGORIZE_CHUNK)) {
-      const { error } = await supabase.from('transactions').update({ category_id: categoryId }).in('id', batch)
-      if (error) throw error
-    }
-  }
-  for (const table of ['transaction_splits', 'merchant_categories', 'category_rules']) {
-    const { error } = await supabase.from(table).update({ category_id: root.id }).in('category_id', feeIds)
-    if (error) throw error
-  }
-  const { error: archErr } = await supabase.from('categories').update({ is_active: false }).in('id', feeIds)
-  if (archErr) throw archErr
-  return { moved: rows.length, annualFees: annual.length }
 }
 
 export async function deleteCategory(id: UUID): Promise<void> {
