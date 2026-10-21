@@ -7,7 +7,9 @@
 
 import { useMemo, useState } from 'react'
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
-import { BarChart3, PieChart as PieIcon, X } from 'lucide-react'
+import { AlignLeft, CalendarDays, Download, PieChart as PieIcon, Rows3, X } from 'lucide-react'
+import { IconToggle, SelectMenu, ToolbarButton } from '@/components/simplifi/Toolbar'
+import { downloadCsv, transactionsToCsv } from '@/lib/exportCsv'
 import { useTransactionsRange } from '@/data/hooks'
 import { useDebouncedValue } from '@/hooks/use-debounce'
 import { applyExcludes, expandSplits, groupFlow, groupKeyFor, reportFlow, topNWithOther, type GroupBy, type ReportFlow, type ReportGroup } from '@/lib/reports'
@@ -16,7 +18,7 @@ import { formatCurrency } from '@/lib/money'
 import { toISODate } from '@/lib/dates'
 import { chartTooltipItemStyle, chartTooltipLabelStyle, chartTooltipStyle } from '@/lib/chartTooltip'
 import { cn } from '@/lib/utils'
-import { TransactionList } from './TransactionList'
+import { TransactionTable, type RegisterColumns } from './TransactionTable'
 import { TransactionSearchBox } from './TransactionSearchBox'
 import type { Account, Category, Transaction, UUID } from '@/types/domain'
 
@@ -35,6 +37,7 @@ const GROUPINGS: { value: GroupBy; label: string }[] = [
   { value: 'merchant', label: 'By payee' },
   { value: 'tag', label: 'By tag' },
 ]
+const ACTIVITY_COLUMNS: RegisterColumns = { account: true, reviewed: false, category: true, tags: false, exclusion: true }
 const TOP_N = 9
 const PALETTE = ['#4318FF', '#8FE3F7', '#4CC38A', '#F09A6B', '#E6D84E', '#6E5BD8', '#F0604D', '#B85BD8', '#D8F06B', '#9AA3AE']
 
@@ -60,6 +63,9 @@ function presetRange(p: Preset, now: Date): { start: string; end: string; months
       return { start: `${y - 1}-01-01`, end: `${y - 1}-12-31`, months: 12 }
   }
 }
+
+const fmtDate = (iso: string) =>
+  new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { month: 'short', day: '2-digit', year: 'numeric' })
 
 export function FlowAnalysisTab({
   flow,
@@ -96,7 +102,8 @@ export function FlowAnalysisTab({
     [groups],
   )
   const divisor = measure === 'average' ? Math.max(range.months, 1) : 1
-  const total = groups.reduce((s, g) => s + g.total, 0) / divisor
+  // Net of credits, same as the Spending report total (groups netting ≤ 0 aren't charted).
+  const total = rows.reduce((sum, t) => sum + (flow === 'spend' ? t.amount : -t.amount), 0) / divisor
   const pieData = useMemo(() => top.map((g) => ({ ...g, total: g.total / divisor })), [top, divisor])
   const colorOf = (g: ReportGroup, i: number) => (groupBy === 'category' && g.color) || PALETTE[i % PALETTE.length]
 
@@ -113,47 +120,46 @@ export function FlowAnalysisTab({
   }, [rows, focus, top, groupBy, accountsById, categoriesById, parsed])
 
   const flowWord = flow === 'spend' ? 'expenses' : 'income'
-  const selectCls =
-    'h-9 rounded-full border border-border bg-card px-3 text-sm font-medium text-foreground focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary'
 
   return (
     <div className="flex flex-col gap-5">
       <section className="card-surface p-4 md:p-6">
         <div className="flex flex-wrap items-center gap-2 border-b border-border pb-4">
-          <select aria-label="Group by" value={groupBy} onChange={(e) => { setGroupBy(e.target.value as GroupBy); setFocus(null) }} className={selectCls}>
-            {GROUPINGS.map((g) => (
-              <option key={g.value} value={g.value}>{g.label}</option>
-            ))}
-          </select>
-          <select aria-label="Date range" value={preset} onChange={(e) => { setPreset(e.target.value as Preset); setFocus(null) }} className={selectCls}>
-            {PRESETS.map((p) => (
-              <option key={p.value} value={p.value}>{p.label}</option>
-            ))}
-          </select>
-          <div className="ml-auto flex items-center gap-2">
-            <div className="flex overflow-hidden rounded-full border border-border" role="group" aria-label="Chart type">
-              <button type="button" aria-pressed={chart === 'pie'} aria-label="Pie chart" onClick={() => setChart('pie')} className={cn('px-3 py-1.5', chart === 'pie' ? 'bg-primary/10 text-primary' : 'text-muted-foreground')}>
-                <PieIcon className="h-4 w-4" aria-hidden />
-              </button>
-              <button type="button" aria-pressed={chart === 'bar'} aria-label="Bar chart" onClick={() => setChart('bar')} className={cn('px-3 py-1.5', chart === 'bar' ? 'bg-primary/10 text-primary' : 'text-muted-foreground')}>
-                <BarChart3 className="h-4 w-4" aria-hidden />
-              </button>
-            </div>
-            <select aria-label="Total or average" value={measure} onChange={(e) => setMeasure(e.target.value as 'total' | 'average')} className={selectCls}>
-              <option value="total">Total</option>
-              <option value="average">Monthly average</option>
-            </select>
-          </div>
+          <SelectMenu icon={Rows3} value={groupBy} options={GROUPINGS} onChange={(v) => { setGroupBy(v); setFocus(null) }} ariaLabel="Group by" />
+          <SelectMenu icon={CalendarDays} value={preset} options={PRESETS} onChange={(v) => { setPreset(v); setFocus(null) }} ariaLabel="Date range" />
         </div>
 
-        <div className="mt-4">
-          <p className="text-sm text-muted-foreground">
-            {measure === 'average' ? 'Average monthly' : 'Total'} {flowWord}
-          </p>
-          <p className="text-3xl font-bold tabular-nums text-foreground">{formatCurrency(total)}</p>
-          <p className="text-xs text-muted-foreground">
-            {range.start} – {range.end}
-          </p>
+        <div className="mt-4 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-sm text-muted-foreground">
+              {measure === 'average' ? 'Average monthly' : 'Total'} {flowWord}
+            </p>
+            <p className="text-2xl font-bold tabular-nums text-foreground">{formatCurrency(total)}</p>
+            <p className="text-sm text-muted-foreground">
+              {fmtDate(range.start)} - {fmtDate(range.end)}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <IconToggle
+              value={chart}
+              onChange={setChart}
+              ariaLabel="Chart type"
+              options={[
+                { value: 'pie', icon: PieIcon, label: 'Pie chart' },
+                { value: 'bar', icon: AlignLeft, label: 'Bar chart' },
+              ]}
+            />
+            <SelectMenu
+              value={measure}
+              options={[
+                { value: 'total', label: 'Total' },
+                { value: 'average', label: 'Average' },
+              ]}
+              onChange={setMeasure}
+              ariaLabel="Total or average"
+              align="end"
+            />
+          </div>
         </div>
 
         {isLoading ? (
@@ -168,8 +174,8 @@ export function FlowAnalysisTab({
                   data={pieData}
                   dataKey="total"
                   nameKey="label"
-                  innerRadius={60}
-                  outerRadius={120}
+                  innerRadius={58}
+                  outerRadius={136}
                   strokeWidth={0}
                   className="cursor-pointer"
                   onClick={(_: unknown, i: number) => setFocus(top[i] ?? null)}
@@ -190,10 +196,10 @@ export function FlowAnalysisTab({
               <p className="mb-3 text-sm font-medium text-foreground">
                 All {groupBy === 'category' ? 'categories' : groupBy === 'merchant' ? 'payees' : 'tags'}
               </p>
-              <ul className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3 lg:grid-cols-4">
+              <ul className="grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-x-4 gap-y-6">
                 {top.map((g, i) => (
-                  <li key={g.id}>
-                    <button type="button" onClick={() => setFocus(g)} className={cn('flex items-start gap-2 text-left', focus?.id === g.id && 'underline')}>
+                  <li key={g.id} className="min-w-0">
+                    <button type="button" onClick={() => setFocus(g)} className={cn('flex w-full items-start gap-2 text-left', focus?.id === g.id && 'underline')}>
                       <span className="mt-1 h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: colorOf(g, i) }} aria-hidden />
                       <span className="min-w-0">
                         <span className="block truncate text-sm text-foreground">{g.label}</span>
@@ -233,12 +239,26 @@ export function FlowAnalysisTab({
               </button>
             </span>
           )}
-          <TransactionSearchBox value={query} onChange={setQuery} className="min-w-[260px] md:ml-auto md:max-w-md" />
+          <div className="flex min-w-[260px] flex-1 items-center gap-2 md:ml-auto md:max-w-md">
+            <TransactionSearchBox value={query} onChange={setQuery} />
+            <ToolbarButton
+              icon={Download}
+              aria-label="Download CSV"
+              onClick={() => downloadCsv(`${flow}-activity-${range.start}-${range.end}.csv`, transactionsToCsv(activity, accountsById))}
+            />
+          </div>
         </div>
         {activity.length === 0 ? (
           <p className="py-6 text-center text-sm text-muted-foreground">No matching transactions.</p>
         ) : (
-          <TransactionList transactions={activity} accounts={accountsById} onSelect={onSelect} onToggleReviewed={onToggleReviewed} />
+          <TransactionTable
+            transactions={activity}
+            accountsById={accountsById}
+            onSelect={onSelect}
+            onToggleReviewed={onToggleReviewed}
+            columns={ACTIVITY_COLUMNS}
+            grouped={false}
+          />
         )}
       </section>
     </div>

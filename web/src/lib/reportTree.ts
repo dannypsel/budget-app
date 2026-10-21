@@ -152,3 +152,38 @@ export function buildTaxTree(txns: Transaction[], categories: Category[], groups
   const root: TreeNode = { id: 'taxes', label: 'Taxes', total: 0, children: [income, deductions].filter((n) => n.total !== 0 || n.children.length > 0), txns: [] }
   return sortTree(root)
 }
+
+/** One-level tree (root ▸ group ▸ transactions) for non-category groupings. */
+export function buildGroupTree(
+  txns: Transaction[],
+  flow: ReportFlow,
+  keyOf: (t: Transaction) => { id: string; label: string; color?: string },
+): TreeNode {
+  const root: TreeNode = { id: flow, label: flow === 'spend' ? 'Expenses' : 'Income', total: 0, children: [], txns: [] }
+  const byId = new Map<string, TreeNode>()
+  for (const t of txns) {
+    if (reportFlow(t) !== flow) continue
+    const amt = flow === 'spend' ? t.amount : -t.amount
+    const k = keyOf(t)
+    let n = byId.get(k.id)
+    if (!n) {
+      n = { id: k.id, label: k.label, total: 0, children: [], txns: [], color: k.color }
+      byId.set(k.id, n)
+      root.children.push(n)
+    }
+    n.total += amt
+    n.txns.push(t)
+    root.total += amt
+  }
+  return sortTree(root)
+}
+
+/** Depth-first lookup of a node by id. */
+export function findNode(root: TreeNode, id: string): TreeNode | null {
+  if (root.id === id) return root
+  for (const c of root.children) {
+    const hit = findNode(c, id)
+    if (hit) return hit
+  }
+  return null
+}

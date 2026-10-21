@@ -2,9 +2,8 @@
 // over the range, then a "<…> by month" table grouped Assets ▸ section ▸ account.
 // Data: account_balance_history month-end values (lib/balanceReport).
 
-import { useMemo, useState } from 'react'
-import { ChevronDown, ChevronRight, Download } from 'lucide-react'
-import { Button } from '@/components/ui/button'
+import { useEffect, useMemo, useState } from 'react'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 import { TrendAreaChart } from '@/components/finance/TrendAreaChart'
 import { useAccounts, useBalanceHistory } from '@/data/hooks'
 import { buildBalanceReport, monthEndBalances, monthsBetween } from '@/lib/balanceReport'
@@ -13,6 +12,9 @@ import { toISODate } from '@/lib/dates'
 import { downloadCsv, rowsToCsv } from '@/lib/exportCsv'
 import { cn } from '@/lib/utils'
 
+const fmtDate = (iso: string) =>
+  new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { month: 'short', day: '2-digit', year: 'numeric' })
+
 /** Look back this far before the range so month-end values can carry forward. */
 const CARRY_DAYS = 120
 
@@ -20,10 +22,13 @@ export function BalanceReport({
   mode,
   start,
   end,
+  exportRef,
 }: {
   mode: 'net-worth' | 'savings'
   start: string
   end: string
+  /** The report header's download button calls this. */
+  exportRef?: { current: (() => void) | null }
 }) {
   const fetchStart = useMemo(() => {
     const d = new Date(`${start}T00:00:00`)
@@ -84,6 +89,11 @@ export function BalanceReport({
     )
     downloadCsv(`${mode}-${start}-${end}.csv`, csv)
   }
+  useEffect(() => {
+    if (exportRef) exportRef.current = exportCsv
+  })
+
+
 
   if (isLoading) {
     return <p className="py-12 text-center text-sm text-muted-foreground">Loading balances…</p>
@@ -93,9 +103,9 @@ export function BalanceReport({
     <div className="flex flex-col gap-6">
       <section className="card-surface p-4 md:p-6">
         <p className="text-sm text-muted-foreground">{title}</p>
-        <p className="text-3xl font-bold tabular-nums text-foreground">{formatCurrency(latest)}</p>
-        <p className="mb-4 text-xs text-muted-foreground">
-          {start} – {end}
+        <p className="text-2xl font-bold tabular-nums text-foreground">{formatCurrency(latest)}</p>
+        <p className="mb-4 text-sm text-muted-foreground">
+          {fmtDate(start)} - {fmtDate(end)}
         </p>
         {report.rows.length === 0 ? (
           <p className="py-8 text-center text-sm text-muted-foreground">
@@ -117,15 +127,9 @@ export function BalanceReport({
 
       {report.rows.length > 0 && (
         <section className="card-surface p-4 md:p-6">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-base font-semibold text-foreground">
-              {mode === 'net-worth' ? 'Net worth by month' : 'Savings by month'}
-            </h2>
-            <Button variant="ghost" size="sm" onClick={exportCsv}>
-              <Download className="mr-1.5 h-4 w-4" aria-hidden />
-              CSV
-            </Button>
-          </div>
+          <h2 className="mb-3 text-base font-semibold text-foreground">
+            {mode === 'net-worth' ? 'Net worth by month' : 'Savings by month'}
+          </h2>
           <div className="overflow-x-auto">
             <table className="w-full min-w-[640px] text-sm">
               <thead>

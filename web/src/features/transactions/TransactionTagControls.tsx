@@ -12,7 +12,7 @@ import type { Transaction } from '@/types/domain'
 const SELECT_CLASS =
   'h-8 rounded-md border border-border bg-card px-2 text-xs text-muted-foreground focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary'
 
-export function TransactionTagControls({ txn }: { txn: Transaction }) {
+export function TransactionTagControls({ txn, className = 'px-4 pb-3' }: { txn: Transaction; className?: string }) {
   const save = useSetTxnTags()
 
   async function onChange(patch: TxnTagPatch) {
@@ -25,7 +25,7 @@ export function TransactionTagControls({ txn }: { txn: Transaction }) {
 
   const label = displayName(txn)
   return (
-    <div className="flex gap-2 px-4 pb-3" onClick={(e) => e.stopPropagation()}>
+    <div className={`flex gap-2 ${className}`} onClick={(e) => e.stopPropagation()}>
       <select
         aria-label={`Need or want for ${label}`}
         value={txn.need_want ?? ''}

@@ -73,6 +73,10 @@ vi.mock('@/data/txnExtras', () => ({
   fetchAttachmentCounts: vi.fn().mockResolvedValue(new Map()),
 }))
 
+async function openSearch() {
+  await userEvent.click(screen.getByLabelText('Show search'))
+}
+
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
@@ -88,6 +92,7 @@ it('an active query swaps the list to search results, and clearing restores the 
   renderPage()
   expect(screen.getByText('Month Coffee')).toBeInTheDocument()
 
+  await openSearch()
   await userEvent.type(screen.getByLabelText('Search transactions'), 'hit')
   // results appear once the 250ms debounce fires
   expect(await screen.findByText('Search Hit')).toBeInTheDocument()
@@ -100,12 +105,14 @@ it('an active query swaps the list to search results, and clearing restores the 
 
 it('shows a designed no-matches state', async () => {
   renderPage()
+  await openSearch()
   await userEvent.type(screen.getByLabelText('Search transactions'), 'zzz')
   expect(await screen.findByText('No matches for “zzz”.')).toBeInTheDocument()
 })
 
 it('search syntax filters client-side over the implied date window', async () => {
   renderPage()
+  await openSearch()
   await userEvent.type(screen.getByLabelText('Search transactions'), 'amount>500')
   expect(await screen.findByText('Big Purchase')).toBeInTheDocument()
   expect(screen.queryByText('Small Purchase')).not.toBeInTheDocument()
@@ -114,6 +121,7 @@ it('search syntax filters client-side over the implied date window', async () =>
 
 it('documents the search syntax in the Shortcuts drawer', async () => {
   renderPage()
+  await openSearch()
   await userEvent.click(screen.getByLabelText('Search syntax help'))
   expect(await screen.findByText('payee:walmart,target')).toBeInTheDocument()
   await userEvent.click(screen.getByText('is:pending'))

@@ -2,7 +2,7 @@
 // "Tax detail"): group ▸ category ▸ transactions with "Total X" subtotal rows.
 // Rows come from lib/reportTree.flattenTree.
 
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { flattenTree, type TreeNode } from '@/lib/reportTree'
 import { formatCurrency } from '@/lib/money'
@@ -20,6 +20,8 @@ export function ReportTreeTable({
   firstColumn = 'Category',
   accountsById,
   flow,
+  summaryOnly = false,
+  headerRight,
 }: {
   root: TreeNode
   title: string
@@ -27,9 +29,15 @@ export function ReportTreeTable({
   accountsById: Map<UUID, Account>
   /** Displayed sign for transaction rows: spend shows outflows positive. */
   flow: 'spend' | 'income' | 'mixed'
+  /** Simplifi's "Summary" view: group rows and totals only, no transaction rows. */
+  summaryOnly?: boolean
+  headerRight?: ReactNode
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
-  const rows = useMemo(() => flattenTree(root, collapsed), [root, collapsed])
+  const rows = useMemo(
+    () => flattenTree(root, collapsed).filter((r) => !(summaryOnly && r.kind === 'txn')),
+    [root, collapsed, summaryOnly],
+  )
   const toggle = (id: string) =>
     setCollapsed((prev) => {
       const next = new Set(prev)
@@ -47,17 +55,26 @@ export function ReportTreeTable({
     <section className="card-surface p-4 md:p-6">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-base font-semibold text-foreground">{title}</h2>
-        <div className="flex gap-2 text-xs">
+        <div className="flex items-center gap-3 text-xs">
           <button type="button" onClick={expandAll} className="text-primary hover:underline">
             Expand all
           </button>
           <button type="button" onClick={collapseAll} className="text-primary hover:underline">
             Collapse all
           </button>
+          {headerRight}
         </div>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[720px] text-sm">
+        <table className="w-full min-w-[720px] table-fixed text-sm">
+          <colgroup>
+            <col className="w-[22%]" />
+            <col className="w-[10%]" />
+            <col className="w-[18%]" />
+            <col className="w-[22%]" />
+            <col className="w-[14%]" />
+            <col className="w-[14%]" />
+          </colgroup>
           <thead>
             <tr className="border-b border-border text-left text-xs font-semibold text-muted-foreground">
               <th className="py-2 pr-3">{firstColumn}</th>
@@ -118,8 +135,8 @@ export function ReportTreeTable({
                     </span>
                   </td>
                   <td className="whitespace-nowrap py-1.5 pr-3">{shortDate(t.effective_date)}</td>
-                  <td className="whitespace-nowrap py-1.5 pr-3">{accountsById.get(t.account_id)?.name ?? ''}</td>
-                  <td className="py-1.5 pr-3 text-foreground">{displayName(t)}</td>
+                  <td className="truncate whitespace-nowrap py-1.5 pr-3">{accountsById.get(t.account_id)?.name ?? ''}</td>
+                  <td className="truncate py-1.5 pr-3 text-foreground">{displayName(t)}</td>
                   <td className="py-1.5 pr-3">{tags.join(', ')}</td>
                   <td className="whitespace-nowrap py-1.5 text-right tabular-nums text-foreground">
                     {formatCurrency(txnAmount(t.amount))}

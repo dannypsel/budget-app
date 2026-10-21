@@ -110,7 +110,8 @@ const PRIVACY_KEY = 'pocketlens.privacyMode'
 export default function AccountsOverview({
   className,
   compact = false,
-}: { className?: string; compact?: boolean } = {}) {
+  variant = 'card',
+}: { className?: string; compact?: boolean; variant?: 'card' | 'panel' } = {}) {
   const { data: plaid = [] } = useAccountsWithBalance()
   const { data: manual = [] } = useSeparateAccounts()
   const [open, setOpen] = useState<Set<string>>(
@@ -210,7 +211,7 @@ export default function AccountsOverview({
     privacyMode ? '••••' : n == null ? '—' : formatCurrency(n)
 
   return (
-    <section className={cn('card-surface p-4 md:p-6', className)}>
+    <section className={cn(variant === 'card' ? 'card-surface p-4 md:p-6' : 'px-4 py-2', className)}>
       <div className="mb-4 flex items-center justify-between">
         <div>
           <h2 className="text-xl font-medium leading-7 text-foreground">Accounts</h2>

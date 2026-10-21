@@ -8,7 +8,7 @@
 // (lib/classify). Transfer and ignored exclusions are applied client-side so
 // toggling is instant.
 
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   Bar,
   BarChart,
@@ -21,12 +21,49 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { ArrowLeft, Download } from 'lucide-react'
+import {
+  AlignLeft,
+  ArrowLeftRight,
+  Bookmark,
+  BookmarkPlus,
+  CalendarDays,
+  Check,
+  ChevronDown as ChevronDownIcon,
+  ChevronUp,
+  Coins,
+  Columns2,
+  Download,
+  Filter as FilterIcon,
+  HandCoins,
+  Home,
+  Landmark,
+  MoreVertical,
+  PieChart as PieIcon,
+  PiggyBank,
+  Printer,
+  Rows3,
+  Search,
+  Table2,
+  TrendingUp,
+  Wallet,
+  type LucideIcon,
+} from 'lucide-react'
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { IconToggle, SelectMenu, ToolbarButton, ToolbarMenu, UnderlineTabs } from '@/components/simplifi/Toolbar'
 import { Button } from '@/components/ui/button'
-import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
 import {
   Table,
   TableBody,
@@ -64,11 +101,11 @@ import {
 import { downloadCsv, rowsToCsv } from '@/lib/exportCsv'
 import { useHorizontalWheel } from '@/hooks/useHorizontalWheel'
 import { cn } from '@/lib/utils'
-import { displayName, type Transaction, type UUID } from '@/types/domain'
+import { displayName, type Account, type Transaction, type UUID } from '@/types/domain'
 import ForecastSection from '@/components/reports/ForecastSection'
 import { ReportTreeTable } from '@/components/reports/ReportTreeTable'
 import { BalanceReport } from '@/components/reports/BalanceReport'
-import { buildCategoryTree, buildTaxTree } from '@/lib/reportTree'
+import { buildCategoryTree, buildGroupTree, buildTaxTree, findNode, type TreeNode } from '@/lib/reportTree'
 
 type ReportId =
   | 'spending'
@@ -106,7 +143,7 @@ const PRESETS: { value: Preset; label: string }[] = [
   { value: 'last-3', label: 'Recent 3 months' },
   { value: 'last-6', label: 'Recent 6 months' },
   { value: 'last-12', label: 'Recent 12 months' },
-  { value: 'custom', label: 'Custom' },
+  { value: 'custom', label: 'Custom range' },
 ]
 
 interface Range {
@@ -149,14 +186,43 @@ function rangeFor(preset: Preset, now: Date, customStart: string, customEnd: str
 
 const GROUP_BYS: { value: GroupBy; label: string }[] = [
   { value: 'category', label: 'Category' },
-  { value: 'merchant', label: 'Merchant' },
+  { value: 'merchant', label: 'Payee' },
   { value: 'account', label: 'Account' },
   { value: 'tag', label: 'Tag' },
 ]
 
+/** The header's download button calls whatever the open report registers here. */
+type ExportRef = { current: (() => void) | null }
+
+/** Register the open report's CSV exporter with the header (after each render). */
+function useExport(ref: ExportRef, fn: () => void) {
+  useEffect(() => {
+    ref.current = fn
+  })
+}
+
+const GROUP_BY_LABEL: Record<GroupBy, string> = {
+  category: 'Category',
+  merchant: 'Payee',
+  account: 'Account',
+  tag: 'Tag',
+}
+
+/** Flatten a report tree to CSV rows (path, date, account, payee, amount). */
+function treeCsv(root: TreeNode, accountsById: Map<UUID, Account>): string {
+  const rows: string[][] = []
+  const walk = (n: TreeNode, path: string[]) => {
+    for (const c of n.children) walk(c, [...path, c.label])
+    for (const t of n.txns)
+      rows.push([path.join(' > '), t.effective_date, accountsById.get(t.account_id)?.name ?? '', displayName(t), Math.abs(t.amount).toFixed(2)])
+  }
+  walk(root, [])
+  return rowsToCsv(['Group', 'Date', 'Account', 'Payee', 'Amount'], rows)
+}
+
 const GROUP_BY_PLURAL: Record<GroupBy, string> = {
   category: 'categories',
-  merchant: 'merchants',
+  merchant: 'payees',
   account: 'accounts',
   tag: 'tags',
 }
@@ -184,15 +250,22 @@ interface FilterState {
   setExcludeIgnored: (b: boolean) => void
 }
 
-function useReportFilters(): FilterState {
-  const [preset, setPreset] = useState<Preset>('last-12')
+interface InitialFilters {
+  preset?: Preset
+  groupBy?: GroupBy
+  excludeTransfers?: boolean
+  excludeIgnored?: boolean
+}
+
+function useReportFilters(initial: InitialFilters = {}): FilterState {
+  const [preset, setPreset] = useState<Preset>(initial.preset ?? 'last-12')
   const [customStart, setCustomStart] = useState('')
   const [customEnd, setCustomEnd] = useState('')
-  const [groupBy, setGroupBy] = useState<GroupBy>('category')
+  const [groupBy, setGroupBy] = useState<GroupBy>(initial.groupBy ?? 'category')
   const [selectedAccountIds, setSelectedAccountIds] = useState<UUID[] | null>(null)
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<UUID[] | null>(null)
-  const [excludeTransfers, setExcludeTransfers] = useState(true)
-  const [excludeIgnored, setExcludeIgnored] = useState(true)
+  const [excludeTransfers, setExcludeTransfers] = useState(initial.excludeTransfers ?? true)
+  const [excludeIgnored, setExcludeIgnored] = useState(initial.excludeIgnored ?? true)
 
   const toggleAccount = (id: UUID) =>
     setSelectedAccountIds((prev) => {
@@ -276,196 +349,117 @@ function priorRange(range: Range): Range {
 
 // ─── filter controls ─────────────────────────────────────────────────────────
 
-function FilterBar({ f }: { f: FilterState }) {
+/** Simplifi's report toolbar card: date range ▾ · Filters ▾ · Compare ▾ on the
+ *  left, view/grouping dropdowns on the right. Every report shares it. */
+function FilterBar({
+  f,
+  compare,
+  right,
+  showGroupBy = true,
+  showFilters = true,
+}: {
+  f: FilterState
+  compare?: { on: boolean; set: (on: boolean) => void }
+  right?: ReactNode
+  showGroupBy?: boolean
+  showFilters?: boolean
+}) {
   const { data: accounts = [] } = useAccountsWithBalance()
   const { data: categories = [] } = useCategories()
-
-  const accountFilterLabel =
-    f.selectedAccountIds == null
-      ? 'All accounts'
-      : f.selectedAccountIds.length === 0
-        ? 'None'
-        : `${f.selectedAccountIds.length} selected`
-  const categoryFilterLabel =
-    f.selectedCategoryIds == null
-      ? 'All categories'
-      : f.selectedCategoryIds.length === 0
-        ? 'None'
-        : `${f.selectedCategoryIds.length} selected`
+  const activeFilters =
+    (f.selectedAccountIds ? 1 : 0) + (f.selectedCategoryIds ? 1 : 0) + (f.excludeTransfers ? 0 : 1) + (f.excludeIgnored ? 0 : 1)
 
   return (
-    <div className="card-surface space-y-4 p-4 md:p-5">
-      <div className="flex flex-wrap items-end gap-4">
-        {/* Presets */}
-        <div className="flex flex-col gap-1.5">
-          <span className="eyebrow">Range</span>
-          <div className="inline-flex flex-wrap gap-1 rounded-lg border border-outline-variant/50 p-1">
-            {PRESETS.map((p) => (
-              <button
-                key={p.value}
-                type="button"
-                onClick={() => f.setPreset(p.value)}
-                className={cn(
-                  'rounded-md px-3 py-1.5 text-sm transition-colors',
-                  f.preset === p.value
-                    ? 'bg-primary text-primary-foreground'
-                    : 'text-muted-foreground hover:bg-muted',
-                )}
-              >
-                {p.label}
-              </button>
-            ))}
-          </div>
+    <div className="card-surface flex flex-wrap items-center gap-3 p-3 md:p-4">
+      <SelectMenu icon={CalendarDays} value={f.preset} options={PRESETS} onChange={f.setPreset} ariaLabel="Date range" />
+      {f.preset === 'custom' && (
+        <div className="flex items-center gap-2">
+          <Label htmlFor="reports-start" className="sr-only">
+            From
+          </Label>
+          <Input id="reports-start" type="date" value={f.customStart} onChange={(e) => f.setCustomStart(e.target.value)} className="h-9 w-40" />
+          <span className="text-muted-foreground">–</span>
+          <Label htmlFor="reports-end" className="sr-only">
+            To
+          </Label>
+          <Input id="reports-end" type="date" value={f.customEnd} onChange={(e) => f.setCustomEnd(e.target.value)} className="h-9 w-40" />
         </div>
-        {f.preset === 'custom' && (
-          <div className="flex items-end gap-2">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="reports-start" className="eyebrow">
-                From
-              </Label>
-              <Input
-                id="reports-start"
-                type="date"
-                value={f.customStart}
-                onChange={(e) => f.setCustomStart(e.target.value)}
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="reports-end" className="eyebrow">
-                To
-              </Label>
-              <Input
-                id="reports-end"
-                type="date"
-                value={f.customEnd}
-                onChange={(e) => f.setCustomEnd(e.target.value)}
-              />
-            </div>
-          </div>
+      )}
+      {showFilters && (
+        <ToolbarMenu icon={FilterIcon} label={activeFilters > 0 ? `Filters (${activeFilters})` : 'Filters'} contentClassName="w-72">
+          <DropdownMenuLabel>Include</DropdownMenuLabel>
+          <DropdownMenuCheckboxItem checked={f.excludeTransfers} onCheckedChange={(v) => f.setExcludeTransfers(!!v)} onSelect={(e) => e.preventDefault()}>
+            Exclude transfers
+          </DropdownMenuCheckboxItem>
+          <DropdownMenuCheckboxItem checked={f.excludeIgnored} onCheckedChange={(v) => f.setExcludeIgnored(!!v)} onSelect={(e) => e.preventDefault()}>
+            Exclude ignored
+          </DropdownMenuCheckboxItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>
+              Accounts{f.selectedAccountIds ? ` (${f.selectedAccountIds.length})` : ''}
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="max-h-80 w-64 overflow-y-auto">
+              <DropdownMenuItem onSelect={(e) => { e.preventDefault(); f.setSelectedAccountIds(null) }}>All accounts</DropdownMenuItem>
+              <DropdownMenuItem onSelect={(e) => { e.preventDefault(); f.setSelectedAccountIds([]) }}>None</DropdownMenuItem>
+              <DropdownMenuSeparator />
+              {accounts.map((a) => (
+                <DropdownMenuCheckboxItem
+                  key={a.id}
+                  checked={f.selectedAccountIds == null || f.selectedAccountIds.includes(a.id)}
+                  onCheckedChange={() => f.toggleAccount(a.id)}
+                  onSelect={(e) => e.preventDefault()}
+                >
+                  {a.name}
+                </DropdownMenuCheckboxItem>
+              ))}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>
+              Categories{f.selectedCategoryIds ? ` (${f.selectedCategoryIds.length})` : ''}
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="max-h-80 w-64 overflow-y-auto">
+              <DropdownMenuItem onSelect={(e) => { e.preventDefault(); f.setSelectedCategoryIds(null) }}>All categories</DropdownMenuItem>
+              <DropdownMenuItem onSelect={(e) => { e.preventDefault(); f.setSelectedCategoryIds([]) }}>None</DropdownMenuItem>
+              <DropdownMenuSeparator />
+              {categories.map((c) => (
+                <DropdownMenuCheckboxItem
+                  key={c.id}
+                  checked={f.selectedCategoryIds == null || f.selectedCategoryIds.includes(c.id)}
+                  onCheckedChange={() => f.toggleCategory(c.id)}
+                  onSelect={(e) => e.preventDefault()}
+                >
+                  {c.name}
+                </DropdownMenuCheckboxItem>
+              ))}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+        </ToolbarMenu>
+      )}
+      {compare && (
+        <SelectMenu
+          icon={Columns2}
+          value={compare.on ? 'prior' : 'none'}
+          options={[
+            { value: 'none', label: 'Compare' },
+            { value: 'prior', label: 'Compare: prior period' },
+          ]}
+          onChange={(v) => compare.set(v === 'prior')}
+          ariaLabel="Compare"
+        />
+      )}
+      <div className="ml-auto flex flex-wrap items-center gap-3">
+        {right}
+        {showGroupBy && (
+          <SelectMenu icon={Rows3} value={f.groupBy} options={GROUP_BYS} onChange={f.setGroupBy} ariaLabel="Group by" align="end" />
         )}
-
-        {/* Group by */}
-        <div className="flex flex-col gap-1.5">
-          <span className="eyebrow">Group by</span>
-          <div className="inline-flex gap-1 rounded-lg border border-outline-variant/50 p-1">
-            {GROUP_BYS.map((g) => (
-              <button
-                key={g.value}
-                type="button"
-                onClick={() => f.setGroupBy(g.value)}
-                className={cn(
-                  'rounded-md px-3 py-1.5 text-sm transition-colors',
-                  f.groupBy === g.value
-                    ? 'bg-primary text-primary-foreground'
-                    : 'text-muted-foreground hover:bg-muted',
-                )}
-              >
-                {g.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div className="flex flex-wrap items-end gap-4">
-        {/* Account multi-select */}
-        <div className="flex flex-col gap-1.5">
-          <span className="eyebrow">Accounts</span>
-          <details className="relative">
-            <summary className="cursor-pointer list-none rounded-md border border-input bg-background px-3 py-2 text-sm hover:bg-muted">
-              {accountFilterLabel}
-            </summary>
-            <div className="absolute z-20 mt-1 max-h-64 w-64 overflow-auto rounded-md border bg-popover p-2 shadow-lg">
-              <div className="mb-1 flex gap-2 px-2">
-                <button
-                  type="button"
-                  className="text-xs text-primary hover:underline"
-                  onClick={() => f.setSelectedAccountIds(null)}
-                >
-                  All
-                </button>
-                <button
-                  type="button"
-                  className="text-xs text-primary hover:underline"
-                  onClick={() => f.setSelectedAccountIds([])}
-                >
-                  None
-                </button>
-              </div>
-              {accounts.map((a) => {
-                const checked = f.selectedAccountIds == null || f.selectedAccountIds.includes(a.id)
-                return (
-                  <label
-                    key={a.id}
-                    className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted"
-                  >
-                    <Checkbox checked={checked} onCheckedChange={() => f.toggleAccount(a.id)} />
-                    <span className="truncate">{a.name}</span>
-                  </label>
-                )
-              })}
-            </div>
-          </details>
-        </div>
-
-        {/* Category multi-select */}
-        <div className="flex flex-col gap-1.5">
-          <span className="eyebrow">Categories</span>
-          <details className="relative">
-            <summary className="cursor-pointer list-none rounded-md border border-input bg-background px-3 py-2 text-sm hover:bg-muted">
-              {categoryFilterLabel}
-            </summary>
-            <div className="absolute z-20 mt-1 max-h-64 w-64 overflow-auto rounded-md border bg-popover p-2 shadow-lg">
-              <div className="mb-1 flex gap-2 px-2">
-                <button
-                  type="button"
-                  className="text-xs text-primary hover:underline"
-                  onClick={() => f.setSelectedCategoryIds(null)}
-                >
-                  All
-                </button>
-                <button
-                  type="button"
-                  className="text-xs text-primary hover:underline"
-                  onClick={() => f.setSelectedCategoryIds([])}
-                >
-                  None
-                </button>
-              </div>
-              {categories.map((c) => {
-                const checked =
-                  f.selectedCategoryIds == null || f.selectedCategoryIds.includes(c.id)
-                return (
-                  <label
-                    key={c.id}
-                    className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted"
-                  >
-                    <Checkbox checked={checked} onCheckedChange={() => f.toggleCategory(c.id)} />
-                    <span className="truncate">{c.name}</span>
-                  </label>
-                )
-              })}
-            </div>
-          </details>
-        </div>
-
-        {/* Exclusions */}
-        <label className="flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
-          <Switch checked={f.excludeTransfers} onCheckedChange={f.setExcludeTransfers} />
-          Exclude transfers
-        </label>
-        <label className="flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
-          <Switch checked={f.excludeIgnored} onCheckedChange={f.setExcludeIgnored} />
-          Exclude ignored
-        </label>
       </div>
     </div>
   )
 }
 
 // ─── spending report ─────────────────────────────────────────────────────────
-
-const DONUT_N = 10
 
 /** Fallback series palette for non-category groupings (merchant/account/tag),
  *  which carry no stored color of their own. Category groups always use the
@@ -486,14 +480,24 @@ function shortDate(iso: string): string {
   })
 }
 
-function FlowReport({ f, flow }: { f: FilterState; flow: ReportFlow }) {
+const LEGEND_N = 13
+
+function fmtRangeDate(iso: string): string {
+  return new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { month: 'short', day: '2-digit', year: 'numeric' })
+}
+
+function FlowReport({ f, flow, exportRef }: { f: FilterState; flow: ReportFlow; exportRef: ExportRef }) {
   const { range, filtered, isLoading } = useFilteredTransactions(f)
   const { data: accounts = [] } = useAccountsWithBalance()
   const accountsById = useMemo(() => new Map(accounts.map((a) => [a.id, a])), [accounts])
+  const { data: categories = [] } = useCategories()
+  const { data: categoryGroups = [] } = useCategoryGroups()
 
-  const [drill, setDrill] = useState<ReportGroup | null>(null)
-  const drillScrollRef = useRef<HTMLDivElement>(null)
-  useHorizontalWheel(drillScrollRef)
+  const [chart, setChart] = useState<'pie' | 'bar'>('pie')
+  const [chartOpen, setChartOpen] = useState(true)
+  const [view, setView] = useState<'transaction' | 'summary'>('transaction')
+  const [showAll, setShowAll] = useState(false)
+  const [focus, setFocus] = useState<ReportGroup | null>(null)
 
   // Compare to the immediately-prior period of the same length (Simplifi's
   // Compare). Same filters applied to the prior fetch.
@@ -508,14 +512,12 @@ function FlowReport({ f, flow }: { f: FilterState; flow: ReportFlow }) {
   )
   const priorByGroup = useMemo(() => {
     const map = new Map<string, number>()
-    for (const g of groupFlow(priorFiltered, flow, f.groupBy, accountsById)) {
-      map.set(g.id, g.total)
-    }
+    for (const g of groupFlow(priorFiltered, flow, f.groupBy, accountsById)) map.set(g.id, g.total)
     return map
   }, [priorFiltered, flow, f.groupBy, accountsById])
   const priorFlowTotal = useMemo(
-    () => [...priorByGroup.values()].reduce((s, v) => s + v, 0),
-    [priorByGroup],
+    () => priorFiltered.reduce((s, t) => (reportFlow(t) === flow ? s + (flow === 'spend' ? t.amount : -t.amount) : s), 0),
+    [priorFiltered, flow],
   )
 
   const stats = useMemo(() => {
@@ -528,144 +530,133 @@ function FlowReport({ f, flow }: { f: FilterState; flow: ReportFlow }) {
     return { spend, income, count: filtered.length }
   }, [filtered])
   const flowTotal = flow === 'spend' ? stats.spend : stats.income
-  const flowLabel = flow === 'spend' ? 'expenses' : 'income'
 
   const groups = useMemo(
     () => groupFlow(filtered, flow, f.groupBy, accountsById),
     [filtered, flow, f.groupBy, accountsById],
   )
-  const topGroups = useMemo(() => topNWithOther(groups, DONUT_N), [groups])
-  const maxGroup = topGroups[0]?.total ?? 0
-
-  const drillTxns = useMemo<Transaction[]>(() => {
-    if (!drill || drill.id === '__other__') return []
-    const list = filtered.filter(
-      (t) => reportFlow(t) === flow && groupKeyFor(t, f.groupBy, accountsById).id === drill.id,
-    )
-    return [...list].sort((a, b) => b.date.localeCompare(a.date) || b.amount - a.amount)
-  }, [drill, filtered, f.groupBy, accountsById, flow])
-
-  const { data: categories = [] } = useCategories()
-  const { data: categoryGroups = [] } = useCategoryGroups()
-  const tree = useMemo(
-    () => (f.groupBy === 'category' ? buildCategoryTree(filtered, flow, categories, categoryGroups) : null),
-    [filtered, flow, categories, categoryGroups, f.groupBy],
+  // Net credits that land in groups netting ≤ 0 (e.g. reimbursements filed under a
+  // non-spend category) aren't charted but are part of the net total.
+  const credits = flowTotal - groups.reduce((s, g) => s + g.total, 0)
+  const legend = useMemo(
+    () =>
+      (showAll ? groups : topNWithOther(groups, LEGEND_N)).map((g) =>
+        g.id === '__other__' ? { ...g, label: 'Everything else' } : g,
+      ),
+    [groups, showAll],
   )
+  const maxGroup = legend[0]?.total ?? 0
 
-  function exportGroupsCsv() {
-    const csv = rowsToCsv(
-      ['Group', 'Amount'],
-      groups.map((g) => [g.label, g.total.toFixed(2)]),
-    )
-    downloadCsv(`${flow}-${f.groupBy}-${toISODate(new Date())}.csv`, csv)
-  }
+  const tree = useMemo(
+    () =>
+      f.groupBy === 'category'
+        ? buildCategoryTree(filtered, flow, categories, categoryGroups)
+        : buildGroupTree(filtered, flow, (t) => groupKeyFor(t, f.groupBy, accountsById)),
+    [filtered, flow, categories, categoryGroups, f.groupBy, accountsById],
+  )
+  const shownTree = useMemo(() => {
+    if (!focus || focus.id === '__other__') return tree
+    const node = findNode(tree, focus.id)
+    return node ? { ...tree, total: node.total, children: [node], txns: [] } : tree
+  }, [tree, focus])
 
-  function exportDrillCsv() {
-    if (!drill) return
-    const csv = rowsToCsv(
-      ['Date', 'Payee', 'Category', 'Account', 'Amount'],
-      drillTxns.map((t) => [
-        t.date,
-        displayName(t),
-        t.categories?.name ?? 'Uncategorized',
-        accountsById.get(t.account_id)?.name ?? '',
-        t.amount.toFixed(2),
-      ]),
-    )
-    downloadCsv(`${flow}-${drill.label.replace(/\s+/g, '-').toLowerCase()}.csv`, csv)
-  }
+  useExport(exportRef, () => {
+    const rows: string[][] = []
+    const walk = (n: TreeNode, path: string[]) => {
+      for (const c of n.children) walk(c, [...path, c.label])
+      for (const t of n.txns)
+        rows.push([path.join(' > '), t.effective_date, accountsById.get(t.account_id)?.name ?? '', displayName(t), (flow === 'spend' ? t.amount : -t.amount).toFixed(2)])
+    }
+    walk(shownTree, [])
+    downloadCsv(`${flow}-${f.groupBy}-${toISODate(new Date())}.csv`, rowsToCsv([GROUP_BY_LABEL[f.groupBy], 'Date', 'Account', 'Payee', 'Amount'], rows))
+  })
 
   const groupColor = groupColorOf
+  const flowWord = flow === 'spend' ? 'expenses' : 'income'
 
   return (
     <div className="flex flex-col gap-6">
-      <FilterBar f={f} />
+      <FilterBar
+        f={f}
+        compare={{ on: compare, set: setCompare }}
+        right={
+          <SelectMenu
+            icon={Table2}
+            value={view}
+            options={[
+              { value: 'transaction', label: 'Transaction' },
+              { value: 'summary', label: 'Summary' },
+            ]}
+            onChange={setView}
+            ariaLabel="Table detail"
+            align="end"
+          />
+        }
+      />
 
       {isLoading ? (
         <p className="py-12 text-center text-sm text-muted-foreground">Loading transactions…</p>
       ) : (
         <>
-          {/* Compare + print toolbar */}
-          <div className="flex flex-wrap items-center gap-4">
-            <label className="flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
-              <Switch checked={compare} onCheckedChange={setCompare} />
-              Compare to prior period
-            </label>
-            {compare && (
-              <span className="text-sm text-muted-foreground">
-                {flow === 'spend' ? 'Expenses' : 'Income'} {formatCurrency(flowTotal)} vs{' '}
-                {formatCurrency(priorFlowTotal)} prior (
-                {priorFlowTotal > 0
-                  ? `${flowTotal >= priorFlowTotal ? '+' : ''}${(((flowTotal - priorFlowTotal) / priorFlowTotal) * 100).toFixed(1)}%`
-                  : '—'}
-                )
-              </span>
-            )}
-            <Button
-              variant="ghost"
-              size="sm"
-              className="ml-auto"
-              onClick={() => window.print()}
-            >
-              Print / PDF
-            </Button>
-          </div>
-
-          {/* Summary strip */}
-          <section className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            <div className="card-surface p-4">
-              <p className="eyebrow">Total spend</p>
-              <p className="mt-1 text-2xl font-bold tabular-nums text-money-expense">
-                {formatCurrency(stats.spend)}
-              </p>
-            </div>
-            <div className="card-surface p-4">
-              <p className="eyebrow">Total income</p>
-              <p className="mt-1 text-2xl font-bold tabular-nums text-money-income">
-                {formatCurrency(stats.income)}
-              </p>
-            </div>
-            <div className="card-surface p-4">
-              <p className="eyebrow">Transactions</p>
-              <p className="mt-1 text-2xl font-bold tabular-nums">{stats.count}</p>
-            </div>
-          </section>
-
-          {/* Donut + legend */}
           <section className="card-surface p-4 md:p-6">
-            <div className="mb-4 flex items-center justify-between">
-              <h2 className="eyebrow">
-                {flow === 'spend' ? 'Spending' : 'Income'} by {f.groupBy}
-              </h2>
-              <Button variant="ghost" size="sm" onClick={exportGroupsCsv}>
-                <Download className="mr-1.5 h-4 w-4" aria-hidden />
-                CSV
-              </Button>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-sm text-muted-foreground">Total {flowWord}</p>
+                <p className="text-2xl font-bold tabular-nums text-foreground">{formatCurrency(flowTotal)}</p>
+                <p className="text-sm text-muted-foreground">
+                  {fmtRangeDate(range.start)} - {fmtRangeDate(range.end)}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {stats.count} transactions ·{' '}
+                  {flow === 'spend' ? `Income ${formatCurrency(stats.income)}` : `Expenses ${formatCurrency(stats.spend)}`}
+                  {Math.abs(credits) > 0.005 && ` · includes ${formatCurrency(credits)} in net credits not charted`}
+                </p>
+                {compare && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    vs {formatCurrency(priorFlowTotal)} prior period (
+                    {priorFlowTotal > 0
+                      ? `${flowTotal >= priorFlowTotal ? '+' : ''}${(((flowTotal - priorFlowTotal) / priorFlowTotal) * 100).toFixed(1)}%`
+                      : '—'}
+                    )
+                  </p>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <IconToggle
+                  value={chart}
+                  onChange={setChart}
+                  ariaLabel="Chart type"
+                  options={[
+                    { value: 'pie', icon: PieIcon, label: 'Pie chart' },
+                    { value: 'bar', icon: AlignLeft, label: 'Bar chart' },
+                  ]}
+                />
+                <ToolbarButton
+                  icon={chartOpen ? ChevronUp : ChevronDownIcon}
+                  onClick={() => setChartOpen((o) => !o)}
+                  aria-label={chartOpen ? 'Collapse chart' : 'Expand chart'}
+                />
+              </div>
             </div>
-            {topGroups.length === 0 ? (
-              <p className="py-8 text-center text-sm text-muted-foreground">
-                No {flowLabel} in this range.
-              </p>
-            ) : (
-              <div className="grid gap-6 md:grid-cols-2">
-                <div className="relative">
+
+            {chartOpen &&
+              (legend.length === 0 ? (
+                <p className="py-8 text-center text-sm text-muted-foreground">No {flowWord} in this range.</p>
+              ) : chart === 'pie' ? (
+                <div className="mt-4 grid items-center gap-6 md:grid-cols-[300px_1fr]">
                   <ResponsiveContainer width="100%" height={280}>
                     <PieChart>
                       <Pie
-                        data={topGroups}
+                        data={legend}
                         dataKey="total"
                         nameKey="label"
-                        innerRadius={70}
-                        outerRadius={110}
-                        paddingAngle={1.5}
+                        innerRadius={58}
+                        outerRadius={136}
                         strokeWidth={0}
-                        onClick={(_: unknown, index: number) => {
-                          const g = topGroups[index]
-                          if (g && g.id !== '__other__') setDrill(g)
-                        }}
+                        onClick={(_: unknown, index: number) => setFocus(legend[index] ?? null)}
                         className="cursor-pointer"
                       >
-                        {topGroups.map((g, i) => (
+                        {legend.map((g, i) => (
                           <Cell key={g.id} fill={groupColor(g, i)} />
                         ))}
                       </Pie>
@@ -677,154 +668,81 @@ function FlowReport({ f, flow }: { f: FilterState; flow: ReportFlow }) {
                       />
                     </PieChart>
                   </ResponsiveContainer>
-                  <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-                    <span className="eyebrow">Total</span>
-                    <span className="text-xl font-bold tabular-nums">
-                      {formatCurrency(flowTotal)}
-                    </span>
+                  <div>
+                    <p className="mb-4 text-sm text-foreground">All {GROUP_BY_PLURAL[f.groupBy]}</p>
+                    <ul className="grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-x-4 gap-y-6">
+                      {legend.map((g, i) => (
+                        <li key={g.id} className="min-w-0">
+                          <button
+                            type="button"
+                            onClick={() => setFocus(focus?.id === g.id ? null : g)}
+                            className={cn('flex w-full items-start gap-2 text-left', focus?.id === g.id && 'underline')}
+                          >
+                            <span className="mt-1 h-3.5 w-3.5 shrink-0 rounded-full" style={{ backgroundColor: groupColor(g, i) }} aria-hidden />
+                            <span className="min-w-0">
+                              <span className="block truncate text-sm text-foreground">{g.label}</span>
+                              <span className="block text-sm font-semibold tabular-nums">{formatCurrency(g.total)}</span>
+                              {compare && priorByGroup.get(g.id) != null && (
+                                <span className="block text-xs text-muted-foreground">vs {formatCurrency(priorByGroup.get(g.id) ?? 0)}</span>
+                              )}
+                            </span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                    {groups.length > LEGEND_N && (
+                      <div className="mt-6 flex justify-center">
+                        <button
+                          type="button"
+                          onClick={() => setShowAll((v) => !v)}
+                          className="flex items-center gap-1 rounded-md bg-primary/10 px-3 py-1.5 text-xs font-semibold text-primary"
+                        >
+                          {showAll ? 'Show fewer' : `Show all ${GROUP_BY_PLURAL[f.groupBy]}`}
+                          {showAll ? <ChevronUp className="h-3.5 w-3.5" aria-hidden /> : <ChevronDownIcon className="h-3.5 w-3.5" aria-hidden />}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
-                <ul className="flex flex-col justify-center gap-1">
-                  {topGroups.map((g, i) => (
+              ) : (
+                <ul className="mt-4 space-y-2.5">
+                  {legend.map((g, i) => (
                     <li key={g.id}>
-                      <button
-                        type="button"
-                        disabled={g.id === '__other__'}
-                        onClick={() => setDrill(g)}
-                        className={cn(
-                          'flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left text-sm',
-                          g.id !== '__other__' && 'hover:bg-muted',
-                        )}
-                      >
-                        <span
-                          className="h-3 w-3 shrink-0 rounded-sm"
-                          style={{ backgroundColor: groupColor(g, i) }}
-                          aria-hidden
-                        />
-                        <span className="min-w-0 flex-1 truncate text-foreground">{g.label}</span>
-                        <span className="shrink-0 tabular-nums text-muted-foreground">
-                          {formatCurrency(g.total)}
-                          {compare && priorByGroup.get(g.id) != null && (
-                            <span className="ml-2 text-xs">
-                              vs {formatCurrency(priorByGroup.get(g.id) ?? 0)}
-                            </span>
-                          )}
+                      <button type="button" onClick={() => setFocus(focus?.id === g.id ? null : g)} className="flex w-full items-center gap-3 text-left">
+                        <span className="w-44 shrink-0 truncate text-sm text-foreground">{g.label}</span>
+                        <span className="h-5 flex-1 overflow-hidden rounded bg-muted">
+                          <span
+                            className="block h-full rounded"
+                            style={{ width: `${maxGroup > 0 ? (g.total / maxGroup) * 100 : 0}%`, backgroundColor: groupColor(g, i) }}
+                          />
                         </span>
+                        <span className="w-28 shrink-0 text-right text-sm tabular-nums text-muted-foreground">{formatCurrency(g.total)}</span>
                       </button>
                     </li>
                   ))}
                 </ul>
-              </div>
-            )}
+              ))}
           </section>
 
-          {/* Horizontal bars */}
-          {topGroups.length > 0 && (
-            <section className="card-surface p-4 md:p-6">
-              <h2 className="eyebrow mb-4">
-                Top {f.groupBy === 'category' ? 'categories' : GROUP_BY_PLURAL[f.groupBy]}
-              </h2>
-              <ul className="space-y-2.5">
-                {topGroups.map((g, i) => (
-                  <li key={g.id} className="flex items-center gap-3">
-                    <span className="w-40 shrink-0 truncate text-sm text-foreground">{g.label}</span>
-                    <div className="h-5 flex-1 overflow-hidden rounded bg-muted">
-                      <div
-                        className="h-full rounded"
-                        style={{
-                          width: `${maxGroup > 0 ? (g.total / maxGroup) * 100 : 0}%`,
-                          backgroundColor: groupColor(g, i),
-                        }}
-                      />
-                    </div>
-                    <span className="w-24 shrink-0 text-right text-sm tabular-nums text-muted-foreground">
-                      {formatCurrency(g.total)}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
-
-          {/* Simplifi's "<flow> transactions by category" tree */}
-          {tree && tree.children.length > 0 && (
+          {shownTree.children.length > 0 && (
             <ReportTreeTable
-              root={tree}
-              title={`${flow === 'spend' ? 'Expense' : 'Income'} transactions by category`}
+              root={shownTree}
+              title={`${flow === 'spend' ? 'Expense' : 'Income'} transactions by ${GROUP_BY_LABEL[f.groupBy].toLowerCase()}`}
+              firstColumn={GROUP_BY_LABEL[f.groupBy]}
               accountsById={accountsById}
               flow={flow}
+              summaryOnly={view === 'summary'}
+              headerRight={
+                focus && (
+                  <span className="flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 font-medium text-primary">
+                    {focus.label}
+                    <button type="button" aria-label="Clear group filter" onClick={() => setFocus(null)}>
+                      ×
+                    </button>
+                  </span>
+                )
+              }
             />
-          )}
-
-          {/* Drill-down */}
-          {drill && (
-            <section className="card-surface p-4 md:p-6">
-              <div className="mb-4 flex items-center justify-between gap-2">
-                <div className="flex min-w-0 items-center gap-2">
-                  <Button variant="ghost" size="sm" onClick={() => setDrill(null)}>
-                    <ArrowLeft className="mr-1.5 h-4 w-4" aria-hidden />
-                    All {GROUP_BY_PLURAL[f.groupBy]}
-                  </Button>
-                  <h2 className="truncate text-sm font-semibold text-foreground">{drill.label}</h2>
-                </div>
-                <Button variant="ghost" size="sm" onClick={exportDrillCsv}>
-                  <Download className="mr-1.5 h-4 w-4" aria-hidden />
-                  CSV
-                </Button>
-              </div>
-              <div className="mb-3 flex gap-6 text-sm">
-                <span className="text-muted-foreground">
-                  Total{' '}
-                  <strong className="tabular-nums text-foreground">
-                    {formatCurrency(drill.total)}
-                  </strong>
-                </span>
-                <span className="text-muted-foreground">
-                  Transactions{' '}
-                  <strong className="tabular-nums text-foreground">{drillTxns.length}</strong>
-                </span>
-              </div>
-              <div ref={drillScrollRef} className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Date</TableHead>
-                      <TableHead>Payee</TableHead>
-                      <TableHead>Category</TableHead>
-                      <TableHead>Account</TableHead>
-                      <TableHead className="text-right">Amount</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {drillTxns.map((t) => (
-                      <TableRow key={t.id}>
-                        <TableCell className="whitespace-nowrap text-muted-foreground">
-                          {shortDate(t.date)}
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap font-medium">
-                          {displayName(t)}
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap text-muted-foreground">
-                          {t.categories?.name ?? 'Uncategorized'}
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap text-muted-foreground">
-                          {accountsById.get(t.account_id)?.name ?? ''}
-                        </TableCell>
-                        <TableCell
-                          className={cn(
-                            'whitespace-nowrap text-right tabular-nums',
-                            t.amount < 0 ? 'text-money-income' : 'text-foreground',
-                          )}
-                        >
-                          {t.amount < 0 ? '+' : ''}
-                          {formatCurrency(t.amount)}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            </section>
           )}
         </>
       )}
@@ -836,7 +754,7 @@ function FlowReport({ f, flow }: { f: FilterState; flow: ReportFlow }) {
 
 const SUMMARY_N = 8
 
-function FlowSummaryReport({ f, flow }: { f: FilterState; flow: ReportFlow }) {
+function FlowSummaryReport({ f, flow, exportRef }: { f: FilterState; flow: ReportFlow; exportRef: ExportRef }) {
   const { range, filtered, isLoading } = useFilteredTransactions(f)
   const { data: accounts = [] } = useAccountsWithBalance()
   const accountsById = useMemo(() => new Map(accounts.map((a) => [a.id, a])), [accounts])
@@ -884,7 +802,7 @@ function FlowSummaryReport({ f, flow }: { f: FilterState; flow: ReportFlow }) {
 
   const groupColor = groupColorOf
 
-  function exportSummaryCsv() {
+  useExport(exportRef, function exportSummaryCsv() {
     const csv = rowsToCsv(
       ['Group', ...monthCols.map((c) => c.label), 'Total'],
       groups.map((g, i) => [
@@ -894,7 +812,8 @@ function FlowSummaryReport({ f, flow }: { f: FilterState; flow: ReportFlow }) {
       ]),
     )
     downloadCsv(`${flow}-summary-${f.groupBy}-${toISODate(new Date())}.csv`, csv)
-  }
+  })
+
 
   return (
     <div className="flex flex-col gap-6">
@@ -906,18 +825,9 @@ function FlowSummaryReport({ f, flow }: { f: FilterState; flow: ReportFlow }) {
         <>
           <section className="card-surface p-4 md:p-6">
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="eyebrow">
-                Monthly {flow === 'spend' ? 'spending' : 'income'} by {f.groupBy}
+              <h2 className="text-base font-semibold text-foreground">
+                Monthly {flow === 'spend' ? 'spending' : 'income'} by {GROUP_BY_LABEL[f.groupBy].toLowerCase()}
               </h2>
-              <div className="flex items-center gap-1">
-                <Button variant="ghost" size="sm" onClick={() => window.print()}>
-                  Print / PDF
-                </Button>
-                <Button variant="ghost" size="sm" onClick={exportSummaryCsv}>
-                  <Download className="mr-1.5 h-4 w-4" aria-hidden />
-                  CSV
-                </Button>
-              </div>
             </div>
             {monthCols.length === 0 || groups.length === 0 ? (
               <p className="py-8 text-center text-sm text-muted-foreground">
@@ -1040,7 +950,7 @@ function FlowSummaryReport({ f, flow }: { f: FilterState; flow: ReportFlow }) {
 
 // ─── income & expense report ──────────────────────────────────────────────────
 
-function IncomeExpenseReport({ f }: { f: FilterState }) {
+function IncomeExpenseReport({ f, exportRef }: { f: FilterState; exportRef: ExportRef }) {
   const { range, filtered, isLoading } = useFilteredTransactions(f)
   const buckets = useMemo(
     () => monthlyBuckets(filtered, range.start, range.end),
@@ -1056,7 +966,7 @@ function IncomeExpenseReport({ f }: { f: FilterState }) {
   const tableScrollRef = useRef<HTMLDivElement>(null)
   useHorizontalWheel(tableScrollRef)
 
-  function exportCsv() {
+  useExport(exportRef, function exportCsv() {
     const csv = rowsToCsv(
       ['Month', 'Income', 'Expenses', 'Net'],
       buckets.map((b) => [
@@ -1067,11 +977,12 @@ function IncomeExpenseReport({ f }: { f: FilterState }) {
       ]),
     )
     downloadCsv(`income-expense-${toISODate(new Date())}.csv`, csv)
-  }
+  })
+
 
   return (
     <div className="flex flex-col gap-6">
-      <FilterBar f={f} />
+      <FilterBar f={f} showGroupBy={false} />
       {isLoading ? (
         <p className="py-12 text-center text-sm text-muted-foreground">Loading transactions…</p>
       ) : (
@@ -1099,16 +1010,7 @@ function IncomeExpenseReport({ f }: { f: FilterState }) {
 
           <section className="card-surface p-4 md:p-6">
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="eyebrow">Income vs expenses by month</h2>
-              <div className="flex items-center gap-1">
-                <Button variant="ghost" size="sm" onClick={() => window.print()}>
-                  Print / PDF
-                </Button>
-                <Button variant="ghost" size="sm" onClick={exportCsv}>
-                  <Download className="mr-1.5 h-4 w-4" aria-hidden />
-                  CSV
-                </Button>
-              </div>
+              <h2 className="text-base font-semibold text-foreground">Income vs expenses by month</h2>
             </div>
             {buckets.length === 0 ? (
               <p className="py-8 text-center text-sm text-muted-foreground">
@@ -1241,9 +1143,6 @@ function MonthlySummaryReport() {
         >
           Next →
         </Button>
-        <Button variant="ghost" size="sm" className="ml-auto" onClick={() => window.print()}>
-          Print / PDF
-        </Button>
       </div>
 
       {isLoading ? (
@@ -1347,16 +1246,17 @@ function MonthlySummaryReport() {
 
 // ─── taxes / net worth / savings ──────────────────────────────────────────────
 
-function TaxesReport({ f }: { f: FilterState }) {
+function TaxesReport({ f, exportRef }: { f: FilterState; exportRef: ExportRef }) {
   const { filtered, isLoading } = useFilteredTransactions(f)
   const { data: accounts = [] } = useAccountsWithBalance()
   const accountsById = useMemo(() => new Map(accounts.map((a) => [a.id, a])), [accounts])
   const { data: categories = [] } = useCategories()
   const { data: categoryGroups = [] } = useCategoryGroups()
   const tree = useMemo(() => buildTaxTree(filtered, categories, categoryGroups), [filtered, categories, categoryGroups])
+  useExport(exportRef, () => downloadCsv(`taxes-${toISODate(new Date())}.csv`, treeCsv(tree, accountsById)))
   return (
     <div className="flex flex-col gap-6">
-      <FilterBar f={f} />
+      <FilterBar f={f} showGroupBy={false} />
       <p className="text-xs text-muted-foreground">
         Taxable income is every income-category inflow. Tax payments &amp; deductions are spend in
         categories named for taxes, charity, medical, education, childcare, or mortgage interest.
@@ -1373,27 +1273,13 @@ function TaxesReport({ f }: { f: FilterState }) {
   )
 }
 
-function BalanceReportView({ f, mode }: { f: FilterState; mode: 'net-worth' | 'savings' }) {
+function BalanceReportView({ f, mode, exportRef }: { f: FilterState; mode: 'net-worth' | 'savings'; exportRef: ExportRef }) {
   const now = useMemo(() => new Date(), [])
   const range = useMemo(() => rangeFor(f.preset, now, f.customStart, f.customEnd), [f.preset, f.customStart, f.customEnd, now])
   return (
     <div className="flex flex-col gap-6">
-      <label className="flex items-center gap-2 text-sm text-muted-foreground">
-        <span className="eyebrow">Date range</span>
-        <select
-          aria-label="Date range"
-          value={f.preset}
-          onChange={(e) => f.setPreset(e.target.value as Preset)}
-          className="h-9 rounded-md border border-border bg-card px-3 text-sm text-foreground"
-        >
-          {PRESETS.filter((p) => p.value !== 'custom').map((p) => (
-            <option key={p.value} value={p.value}>
-              {p.label}
-            </option>
-          ))}
-        </select>
-      </label>
-      <BalanceReport mode={mode} start={range.start} end={range.end} />
+      <FilterBar f={f} showGroupBy={false} showFilters={false} />
+      <BalanceReport mode={mode} start={range.start} end={range.end} exportRef={exportRef} />
     </div>
   )
 }
@@ -1433,145 +1319,130 @@ function storeSavedReports(reports: SavedReport[]) {
 
 // ─── report picker home ───────────────────────────────────────────────────────
 
-const REPORT_CARDS: { id: ReportId; title: string; hint: string; blurb: string }[] = [
-  {
-    id: 'spending',
-    title: 'Spending',
-    hint: 'See where your money goes',
-    blurb:
-      'Donut, top groups, and transaction drill-down by category, merchant, account, or tag — with prior-period compare.',
-  },
-  {
-    id: 'summary',
-    title: 'Spending Summary',
-    hint: 'View your spending over time',
-    blurb: 'Stacked monthly chart and a group-by-month table.',
-  },
-  {
-    id: 'income',
-    title: 'Income',
-    hint: 'Track your sources of income',
-    blurb: 'Income grouped by category, merchant, account, or tag, with drill-down.',
-  },
-  {
-    id: 'income-summary',
-    title: 'Income Summary',
-    hint: 'View your income over time',
-    blurb: 'Stacked monthly income chart and a group-by-month table.',
-  },
-  {
-    id: 'income-expense',
-    title: 'Income & Expense',
-    hint: 'Compare income and expenses',
-    blurb: 'Monthly income vs expenses with a net column, month by month.',
-  },
-  {
-    id: 'net-worth',
-    title: 'Net Worth',
-    hint: 'Your net worth over time',
-    blurb: 'Month-end net worth chart and an assets/liabilities-by-account table from your balance history.',
-  },
-  {
-    id: 'taxes',
-    title: 'Taxes',
-    hint: 'Taxable income and deductions',
-    blurb: 'Taxable income and tax-related spending, grouped by category and payee.',
-  },
-  {
-    id: 'savings',
-    title: 'Savings',
-    hint: 'Savings progress over time',
-    blurb: 'Month-end balances of your savings accounts, with a by-account table.',
-  },
+const REPORT_CARDS: { id: ReportId; title: string; hint: string; icon: LucideIcon; tint: string }[] = [
+  { id: 'spending', title: 'Spending', hint: 'See where your money goes', icon: Wallet, tint: 'bg-violet-100 text-violet-700' },
+  { id: 'summary', title: 'Spending Summary', hint: 'View your spending over time', icon: Wallet, tint: 'bg-violet-100 text-violet-700' },
+  { id: 'income', title: 'Income', hint: 'Track your sources of income', icon: HandCoins, tint: 'bg-emerald-100 text-emerald-700' },
+  { id: 'income-summary', title: 'Income Summary', hint: 'View your income over time', icon: HandCoins, tint: 'bg-emerald-100 text-emerald-700' },
+  { id: 'income-expense', title: 'Income & Expense', hint: 'Compare income and expenses', icon: ArrowLeftRight, tint: 'bg-emerald-100 text-emerald-700' },
+  { id: 'net-worth', title: 'Net Worth', hint: 'Your net worth over time', icon: Coins, tint: 'bg-fuchsia-100 text-fuchsia-700' },
+  { id: 'taxes', title: 'Taxes', hint: 'Taxable income and deductions', icon: Landmark, tint: 'bg-cyan-100 text-cyan-700' },
+  { id: 'savings', title: 'Savings', hint: 'Savings progress over time', icon: PiggyBank, tint: 'bg-rose-100 text-rose-700' },
+]
+
+const WIDE_CARDS: { id: ReportId; title: string; hint: string; chip: string; icon: LucideIcon; tint: string }[] = [
   {
     id: 'monthly-summary',
     title: 'Monthly Summary',
-    hint: 'A snapshot of one month',
-    blurb: 'Income, spending, net, top categories and sources, and largest transactions for a month.',
+    hint: 'A snapshot of your income, spending, and goals for the month.',
+    chip: 'Snapshot',
+    icon: CalendarDays,
+    tint: 'bg-orange-100 text-orange-700',
   },
   {
     id: 'forecast',
     title: 'Forecast',
-    hint: 'Live from your spending plan',
-    blurb:
-      'Where you are headed — projected net worth from the live plan baseline plus your adjustments.',
+    hint: 'Where you are headed — projected net worth from your live plan baseline plus adjustments.',
+    chip: 'Projection',
+    icon: TrendingUp,
+    tint: 'bg-sky-100 text-sky-700',
   },
 ]
 
+const REPORT_ICON: Record<ReportId, { icon: LucideIcon; tint: string }> = Object.fromEntries(
+  [...REPORT_CARDS, ...WIDE_CARDS].map((c) => [c.id, { icon: c.icon, tint: c.tint }]),
+) as Record<ReportId, { icon: LucideIcon; tint: string }>
+
 function ReportsHome({
+  query,
   onSelect,
   saved,
   onOpenSaved,
   onDeleteSaved,
 }: {
+  query: string
   onSelect: (id: ReportId) => void
   saved: SavedReport[]
   onOpenSaved: (r: SavedReport) => void
   onDeleteSaved: (id: string) => void
 }) {
-  const [query, setQuery] = useState('')
-  const cards = REPORT_CARDS.filter((r) =>
-    r.title.toLowerCase().includes(query.trim().toLowerCase()),
-  )
+  const q = query.trim().toLowerCase()
+  const cards = REPORT_CARDS.filter((r) => r.title.toLowerCase().includes(q))
+  const wide = WIDE_CARDS.filter((r) => r.title.toLowerCase().includes(q))
   return (
-    <div>
-      <div className="mb-6 flex flex-wrap items-center gap-3">
-        <p className="text-sm text-muted-foreground">
-          Pick a report to open it. Reports default to the trailing 12 months.
-        </p>
-        <Input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search reports"
-          aria-label="Search reports"
-          className="ml-auto w-56"
-        />
-      </div>
-
-      {saved.length > 0 && (
-        <section className="mb-8">
-          <h2 className="eyebrow mb-3">Saved reports</h2>
-          <ul className="divide-y divide-border card-surface px-4">
-            {saved.map((r) => (
-              <li key={r.id} className="flex items-center gap-3 py-3">
-                <button
-                  type="button"
-                  onClick={() => onOpenSaved(r)}
-                  className="min-w-0 flex-1 text-left"
-                >
-                  <span className="block truncate text-sm font-medium text-foreground hover:underline">
-                    {r.name}
-                  </span>
-                  <span className="block text-xs text-muted-foreground">
-                    {REPORT_TITLES[r.report]} · {PRESETS.find((p) => p.value === r.preset)?.label ?? r.preset}
-                  </span>
-                </button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => onDeleteSaved(r.id)}
-                  aria-label={`Delete saved report ${r.name}`}
-                >
-                  Delete
-                </Button>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {cards.map((r) => (
-          <button key={r.id} type="button" onClick={() => onSelect(r.id)} className="report-card">
-            <h3 className="text-base font-semibold text-foreground">{r.title}</h3>
-            <p className="mt-0.5 text-xs text-muted-foreground">{r.hint}</p>
-            <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{r.blurb}</p>
-          </button>
-        ))}
-        {cards.length === 0 && (
+    <div className="flex flex-col gap-6 lg:flex-row">
+      <div className="min-w-0 flex-1">
+        <h2 className="mb-3 text-lg font-semibold text-foreground">New report</h2>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          {cards.map((r) => (
+            <button key={r.id} type="button" onClick={() => onSelect(r.id)} className="report-card card-surface border border-border p-4 text-left transition-shadow hover:shadow-card-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+              <span className={cn('mb-4 flex h-10 w-10 items-center justify-center rounded-lg', r.tint)}>
+                <r.icon className="h-5 w-5" aria-hidden />
+              </span>
+              <h3 className="text-base font-semibold text-foreground">{r.title}</h3>
+              <p className="mt-0.5 text-sm text-muted-foreground">{r.hint}</p>
+            </button>
+          ))}
+        </div>
+        <div className="mt-6 flex flex-col gap-3">
+          {wide.map((r) => (
+            <button key={r.id} type="button" onClick={() => onSelect(r.id)} className="report-card card-surface flex items-center gap-4 border border-border p-4 text-left transition-shadow hover:shadow-card-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+              <span className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-lg', r.tint)}>
+                <r.icon className="h-5 w-5" aria-hidden />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-base font-semibold text-foreground">{r.title}</span>
+                <span className="block text-sm text-muted-foreground">{r.hint}</span>
+              </span>
+              <span className="rounded-md bg-surface-container-high px-2 py-1 text-xs font-medium text-muted-foreground">{r.chip}</span>
+            </button>
+          ))}
+        </div>
+        {cards.length === 0 && wide.length === 0 && (
           <p className="text-sm text-muted-foreground">No reports match “{query}”.</p>
         )}
       </div>
+
+      <aside aria-label="Saved reports" className="w-full shrink-0 lg:w-[340px] lg:border-l lg:border-border lg:pl-6">
+        <h2 className="mb-3 border-b border-border pb-3 text-lg font-semibold text-foreground">Saved reports</h2>
+        {saved.length === 0 ? (
+          <p className="text-sm text-muted-foreground">Save a report to keep its range, grouping and filters.</p>
+        ) : (
+          <ul className="flex flex-col">
+            {saved.map((r) => {
+              const meta = REPORT_ICON[r.report]
+              return (
+                <li key={r.id} className="flex items-center gap-3 rounded-lg px-1 py-2 hover:bg-accent">
+                  <button type="button" onClick={() => onOpenSaved(r)} className="flex min-w-0 flex-1 items-center gap-3 text-left">
+                    <span className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-md', meta.tint)}>
+                      <meta.icon className="h-4 w-4" aria-hidden />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-semibold text-foreground">{r.name}</span>
+                      <span className="block text-xs text-muted-foreground">
+                        {PRESETS.find((p) => p.value === r.preset)?.label ?? r.preset}
+                      </span>
+                    </span>
+                  </button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button type="button" aria-label={`Options for ${r.name}`} className="rounded p-1 text-muted-foreground hover:text-foreground">
+                        <MoreVertical className="h-4 w-4" aria-hidden />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onSelect={() => onOpenSaved(r)}>Open</DropdownMenuItem>
+                      <DropdownMenuItem onSelect={() => onDeleteSaved(r.id)} aria-label={`Delete saved report ${r.name}`}>
+                        Delete
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </aside>
     </div>
   )
 }
@@ -1604,18 +1475,129 @@ const FILTERED_REPORTS: ReportId[] = [
   'savings',
 ]
 
-export default function ReportsPage() {
-  const [active, setActive] = useState<ReportId | null>(null)
-  // One shared filter state so switching reports keeps the chosen view.
-  const filters = useReportFilters()
-  const [saved, setSaved] = useState<SavedReport[]>(() => loadSavedReports())
+/** Default range per report type (Simplifi's defaults). */
+const DEFAULT_PRESET: Partial<Record<ReportId, Preset>> = {
+  'net-worth': 'last-6',
+  savings: 'last-6',
+  taxes: 'ytd',
+}
 
-  function openSaved(r: SavedReport) {
-    filters.setPreset(r.preset)
-    filters.setGroupBy(r.groupBy)
-    filters.setExcludeTransfers(r.excludeTransfers)
-    filters.setExcludeIgnored(r.excludeIgnored)
-    setActive(r.report)
+interface ReportTabState {
+  key: string
+  report: ReportId
+  saved?: SavedReport
+}
+
+/** One open report tab: its own filters, header actions, and body. Kept mounted
+ *  while hidden so switching tabs preserves each tab's state. */
+function ReportTab({
+  tab,
+  hidden,
+  onSave,
+  onDeleteSaved,
+}: {
+  tab: ReportTabState
+  hidden: boolean
+  onSave: (tab: ReportTabState, f: FilterState) => SavedReport | null
+  onDeleteSaved: (id: string) => void
+}) {
+  const f = useReportFilters(
+    tab.saved
+      ? { preset: tab.saved.preset, groupBy: tab.saved.groupBy, excludeTransfers: tab.saved.excludeTransfers, excludeIgnored: tab.saved.excludeIgnored }
+      : { preset: DEFAULT_PRESET[tab.report] },
+  )
+  const exportRef: ExportRef = useRef(null)
+  const [savedAs, setSavedAs] = useState<SavedReport | undefined>(tab.saved)
+  const unchanged =
+    savedAs != null &&
+    savedAs.preset === f.preset &&
+    savedAs.groupBy === f.groupBy &&
+    savedAs.excludeTransfers === f.excludeTransfers &&
+    savedAs.excludeIgnored === f.excludeIgnored
+  const canSave = FILTERED_REPORTS.includes(tab.report)
+
+  return (
+    <div hidden={hidden} className="flex flex-col gap-6">
+      <div className="flex flex-wrap items-start gap-3">
+        <div className="min-w-0">
+          <h2 className="text-2xl font-semibold tracking-tight text-foreground">{savedAs?.name ?? REPORT_TITLES[tab.report]}</h2>
+          <p className="text-sm text-muted-foreground">{REPORT_TITLES[tab.report]}</p>
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          {canSave && (
+            <button
+              type="button"
+              disabled={unchanged}
+              onClick={() => {
+                const r = onSave(tab, f)
+                if (r) setSavedAs(r)
+              }}
+              className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90 disabled:bg-surface-container-high disabled:text-muted-foreground"
+            >
+              {unchanged ? <Check className="h-4 w-4" aria-hidden /> : <BookmarkPlus className="h-4 w-4" aria-hidden />}
+              {unchanged ? 'Saved' : 'Save'}
+            </button>
+          )}
+          <ToolbarButton icon={Download} aria-label="Download CSV" onClick={() => exportRef.current?.()} />
+          <ToolbarButton icon={Printer} aria-label="Print / PDF" onClick={() => window.print()} />
+          {savedAs && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <ToolbarButton icon={MoreVertical} aria-label="More report options" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  onSelect={() => {
+                    onDeleteSaved(savedAs.id)
+                    setSavedAs(undefined)
+                  }}
+                >
+                  Delete saved report
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+        </div>
+      </div>
+
+      {tab.report === 'spending' && <FlowReport f={f} flow="spend" exportRef={exportRef} />}
+      {tab.report === 'summary' && <FlowSummaryReport f={f} flow="spend" exportRef={exportRef} />}
+      {tab.report === 'income' && <FlowReport f={f} flow="income" exportRef={exportRef} />}
+      {tab.report === 'income-summary' && <FlowSummaryReport f={f} flow="income" exportRef={exportRef} />}
+      {tab.report === 'income-expense' && <IncomeExpenseReport f={f} exportRef={exportRef} />}
+      {tab.report === 'monthly-summary' && <MonthlySummaryReport />}
+      {tab.report === 'net-worth' && <BalanceReportView f={f} mode="net-worth" exportRef={exportRef} />}
+      {tab.report === 'taxes' && <TaxesReport f={f} exportRef={exportRef} />}
+      {tab.report === 'savings' && <BalanceReportView f={f} mode="savings" exportRef={exportRef} />}
+      {tab.report === 'forecast' && <ForecastSection />}
+    </div>
+  )
+}
+
+export default function ReportsPage() {
+  const [tabs, setTabs] = useState<ReportTabState[]>([])
+  const [active, setActive] = useState<string>('home')
+  const [saved, setSaved] = useState<SavedReport[]>(() => loadSavedReports())
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [query, setQuery] = useState('')
+
+  function open(report: ReportId, savedReport?: SavedReport) {
+    const existing = savedReport ? tabs.find((t) => t.saved?.id === savedReport.id) : undefined
+    if (existing) {
+      setActive(existing.key)
+      return
+    }
+    const key = `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
+    setTabs((prev) => [...prev, { key, report, saved: savedReport }])
+    setActive(key)
+  }
+
+  function close(key: string) {
+    setTabs((prev) => {
+      const next = prev.filter((t) => t.key !== key)
+      if (active === key) setActive(next.at(-1)?.key ?? 'home')
+      return next
+    })
   }
 
   function deleteSaved(id: string) {
@@ -1626,63 +1608,82 @@ export default function ReportsPage() {
     })
   }
 
-  function saveCurrent() {
-    if (!active) return
-    const name = window.prompt('Name this report:', REPORT_TITLES[active])
-    if (!name || !name.trim()) return
+  function saveTab(tab: ReportTabState, f: FilterState): SavedReport | null {
+    const name = window.prompt('Name this report:', tab.saved?.name ?? REPORT_TITLES[tab.report])
+    if (!name || !name.trim()) return null
     const entry: SavedReport = {
-      id: `sr-${Date.now().toString(36)}`,
+      id: tab.saved?.id ?? `sr-${Date.now().toString(36)}`,
       name: name.trim(),
-      report: active,
-      preset: filters.preset,
-      groupBy: filters.groupBy,
-      excludeTransfers: filters.excludeTransfers,
-      excludeIgnored: filters.excludeIgnored,
+      report: tab.report,
+      preset: f.preset,
+      groupBy: f.groupBy,
+      excludeTransfers: f.excludeTransfers,
+      excludeIgnored: f.excludeIgnored,
     }
     setSaved((prev) => {
-      const next = [...prev, entry]
+      const next = prev.some((r) => r.id === entry.id) ? prev.map((r) => (r.id === entry.id ? entry : r)) : [...prev, entry]
       storeSavedReports(next)
       return next
     })
+    return entry
   }
 
   return (
-    <div className="flex flex-col gap-6 pt-4 md:pt-8">
-      <div className="flex items-center gap-3">
-        {active && (
-          <Button variant="ghost" size="sm" onClick={() => setActive(null)}>
-            <ArrowLeft className="mr-1.5 h-4 w-4" aria-hidden />
-            Reports
-          </Button>
-        )}
-        <h1 className="text-2xl font-semibold tracking-tight text-foreground">
-          {active ? REPORT_TITLES[active] : 'Reports'}
-        </h1>
-        {active && FILTERED_REPORTS.includes(active) && (
-          <Button variant="outline" size="sm" className="ml-auto" onClick={saveCurrent}>
-            Save report
-          </Button>
-        )}
-      </div>
+    <div className="flex flex-col gap-6 pt-4 md:pt-6">
+      <h1 className="text-2xl font-semibold tracking-tight text-foreground">Reports</h1>
+      <UnderlineTabs
+        ariaLabel="Open reports"
+        value={active}
+        onChange={setActive}
+        tabs={[
+          { value: 'home', label: <><Home className="h-4 w-4" aria-hidden /> Home</> },
+          ...tabs.map((t) => ({
+            value: t.key,
+            label: (
+              <>
+                {t.saved && <Bookmark className="h-3.5 w-3.5 fill-current" aria-hidden />}
+                {t.saved?.name ?? REPORT_TITLES[t.report]}
+              </>
+            ),
+            onClose: () => close(t.key),
+          })),
+        ]}
+        trailing={
+          <>
+            {searchOpen && (
+              <Input
+                autoFocus
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search reports"
+                aria-label="Search reports"
+                className="h-8 w-48"
+              />
+            )}
+            <ToolbarButton
+              icon={Search}
+              aria-label="Search reports"
+              onClick={() => {
+                setSearchOpen((o) => !o)
+                setActive('home')
+              }}
+            />
+          </>
+        }
+      />
 
-      {active === null && (
+      {active === 'home' && (
         <ReportsHome
-          onSelect={setActive}
+          query={query}
+          onSelect={(id) => open(id)}
           saved={saved}
-          onOpenSaved={openSaved}
+          onOpenSaved={(r) => open(r.report, r)}
           onDeleteSaved={deleteSaved}
         />
       )}
-      {active === 'spending' && <FlowReport f={filters} flow="spend" />}
-      {active === 'summary' && <FlowSummaryReport f={filters} flow="spend" />}
-      {active === 'income' && <FlowReport f={filters} flow="income" />}
-      {active === 'income-summary' && <FlowSummaryReport f={filters} flow="income" />}
-      {active === 'income-expense' && <IncomeExpenseReport f={filters} />}
-      {active === 'monthly-summary' && <MonthlySummaryReport />}
-      {active === 'net-worth' && <BalanceReportView f={filters} mode="net-worth" />}
-      {active === 'taxes' && <TaxesReport f={filters} />}
-      {active === 'savings' && <BalanceReportView f={filters} mode="savings" />}
-      {active === 'forecast' && <ForecastSection />}
+      {tabs.map((t) => (
+        <ReportTab key={t.key} tab={t} hidden={active !== t.key} onSave={saveTab} onDeleteSaved={deleteSaved} />
+      ))}
     </div>
   )
 }
