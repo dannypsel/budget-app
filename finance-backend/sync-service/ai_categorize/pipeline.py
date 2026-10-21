@@ -131,9 +131,24 @@ def _profile_prefs(supabase, user_id: str) -> dict:
     return {"enabled": bool(enabled), "provider": provider, "threshold": threshold}
 
 
+def _without_churning(cats: list[dict]) -> list[dict]:
+    """Drop the Churning subtree: it's the user's own bookkeeping for card fees,
+    credit sales and bonuses (excluded from reports), so the AI never files
+    anything there — a guessed "Credit Sales" would silently hide real income."""
+    root = {c["id"] for c in cats if not c.get("parent_id") and (c.get("name") or "").strip().lower() == "churning"}
+    grew = bool(root)
+    while grew:
+        grew = False
+        for c in cats:
+            if c.get("parent_id") in root and c["id"] not in root:
+                root.add(c["id"])
+                grew = True
+    return [c for c in cats if c["id"] not in root]
+
+
 def _active_categories(supabase, user_id: str) -> list[dict]:
     try:
-        return (
+        return _without_churning(
             supabase.table("categories")
             .select("id, name, kind, parent_id")
             .eq("user_id", user_id)

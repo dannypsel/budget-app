@@ -110,3 +110,31 @@ def test_plaid_income_maps_to_personal_income():
 def test_plaid_category_name_returns_most_specific_candidate():
     assert plaid_category_name({"plaid_category": "FOOD_AND_DRINK",
                                 "plaid_category_detail": "FOOD_AND_DRINK_FAST_FOOD"}) == "Fast Food"
+
+
+def test_card_annual_fee_goes_to_churning_once_set_up():
+    ctx = {**CTX, "churn_fee_id": "cat-churn-fees"}
+    fee = {"account_id": "card-1", "merchant_name": None, "description": "Annual Membership Fee",
+           "amount": 695.0, "plaid_category": "BANK_FEES", "plaid_category_detail": "BANK_FEES_OTHER_BANK_FEES"}
+    late = {**fee, "description": "Late Fee"}
+    checking = {**fee, "account_id": "chk-1"}
+    txns = [fee, late, checking]
+    apply_learned(txns, ctx, {"card-1": "credit", "chk-1": "depository"})
+    assert fee["category_id"] == "cat-churn-fees"
+    assert late.get("category_id") != "cat-churn-fees"
+    assert checking.get("category_id") != "cat-churn-fees"
+    # Without the Churning category the usual signals apply.
+    plain = {**fee, "category_id": None}
+    apply_learned([plain], {**ctx, "churn_fee_id": None}, {"card-1": "credit"})
+    assert plain.get("category_id") != "cat-churn-fees"
+
+
+def test_ai_never_offered_churning_categories():
+    from ai_categorize.pipeline import _without_churning
+    cats = [
+        {"id": "ch", "name": "Churning", "parent_id": None},
+        {"id": "fee", "name": "Annual Fees", "parent_id": "ch"},
+        {"id": "din", "name": "Dining & Drinks", "parent_id": None},
+        {"id": "rest", "name": "Restaurants", "parent_id": "din"},
+    ]
+    assert [c["id"] for c in _without_churning(cats)] == ["din", "rest"]

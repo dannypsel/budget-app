@@ -1,4 +1,5 @@
 import logging
+import re
 
 from supabase_client import get_supabase
 from transfers import PFC_TRANSFER
@@ -174,7 +175,16 @@ def load_guess_context(user_id: str) -> dict:
                          extra={'user_id': user_id})
         tag_memory = {}
 
+    churning = next((c for c in top if c['name'].strip().lower() == 'churning'), None)
+    churn_fee_id = next(
+        (c['id'] for c in active
+         if churning and c.get('parent_id') == churning['id']
+         and c['name'].strip().lower() == 'annual fees'),
+        None,
+    )
+
     return {'rules': rules, 'memory': memory, 'income_id': income_id,
+            'churn_fee_id': churn_fee_id,
             'cat_names': cat_names, 'tag_memory': tag_memory,
             'cat_ids_by_name': {c['name']: c['id'] for c in active if c.get('id')}}
 
@@ -250,6 +260,20 @@ def _is_card_refund(txn: dict, acct_types: dict) -> bool:
     return (txn.get('plaid_category') or '') not in PFC_TRANSFER
 
 
+# Card annual fees by statement text ("Annual Fee", "Annual Membership Fee",
+# "Membership Fee Xxxx1007"…) — same pattern as web/src/lib/churningMoney.ts.
+_ANNUAL_FEE = re.compile(
+    r'\b(annual|membership|renewal)\s+(membership\s+)?fee\b|\bannual\s+card\s*member\s+fee\b', re.I)
+
+
+def _is_card_annual_fee(txn: dict, acct_types: dict) -> bool:
+    if (acct_types or {}).get(txn.get('account_id')) != 'credit':
+        return False
+    text = ' '.join(filter(None, (txn.get('original_description'), txn.get('description'),
+                                  txn.get('merchant_name'))))
+    return bool(_ANNUAL_FEE.search(text))
+
+
 def apply_learned(transactions: list[dict], ctx: dict, acct_types: dict = None) -> list[dict]:
     """On sync, auto-apply category guesses in Daniel's signal order:
     bank-provided Plaid category (detailed → primary) → learned merchant
@@ -264,11 +288,16 @@ def apply_learned(transactions: list[dict], ctx: dict, acct_types: dict = None) 
     spend category at all — transfers.py excludes them from totals.
 
     `acct_types` maps account_id (uuid) → account type, used to auto-flag credit-
-    card refunds as reimbursements (see `_is_card_refund`)."""
+    card refunds as reimbursements (see `_is_card_refund`).
+
+    Once the user has set up Churning › Annual Fees, a card's annual fee goes
+    there ahead of every other signal: churning is excluded from spending, and a
+    bank's "fees" category would otherwise count it as spend."""
     memory = ctx['memory']
     rules = ctx['rules']
     income_id = ctx['income_id']
     cat_ids_by_name = ctx.get('cat_ids_by_name') or {}
+    churn_fee_id = ctx.get('churn_fee_id')
 
     for txn in transactions:
         # The most specific (longest-keyword) rule whose conditions all pass wins;
@@ -285,7 +314,9 @@ def apply_learned(transactions: list[dict], ctx: dict, acct_types: dict = None) 
                 candidates = ()
             plaid_name = next((n for n in candidates if cat_ids_by_name.get(n)), None)
             key = _merchant_key(txn)
-            if plaid_name and cat_ids_by_name.get(plaid_name):
+            if churn_fee_id and _is_card_annual_fee(txn, acct_types):
+                txn['category_id'] = churn_fee_id
+            elif plaid_name and cat_ids_by_name.get(plaid_name):
                 txn['category_id'] = cat_ids_by_name[plaid_name]
             elif key and key in memory:
                 txn['category_id'] = memory[key]

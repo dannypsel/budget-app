@@ -9,6 +9,7 @@
 // toggling is instant.
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { hierarchical } from '@/lib/categoryTree'
 import {
   Bar,
@@ -33,6 +34,7 @@ import {
   ChevronUp,
   Coins,
   Columns2,
+  CreditCard,
   Download,
   Filter as FilterIcon,
   HandCoins,
@@ -106,6 +108,7 @@ import { displayName, type Account, type Transaction, type UUID } from '@/types/
 import ForecastSection from '@/components/reports/ForecastSection'
 import { ReportTreeTable } from '@/components/reports/ReportTreeTable'
 import { BalanceReport } from '@/components/reports/BalanceReport'
+import { ChurningReport } from '@/components/reports/ChurningReport'
 import { buildCategoryTree, buildGroupTree, buildTaxTree, findNode, type TreeNode } from '@/lib/reportTree'
 
 type ReportId =
@@ -118,6 +121,7 @@ type ReportId =
   | 'net-worth'
   | 'taxes'
   | 'savings'
+  | 'churning'
   | 'forecast'
 
 // ─── date presets ─────────────────────────────────────────────────────────────
@@ -523,7 +527,7 @@ function FlowReport({ f, flow, exportRef }: { f: FilterState; flow: ReportFlow; 
     const map = new Map<string, number>()
     for (const g of groupFlow(priorFiltered, flow, f.groupBy, accountsById, categoriesById)) map.set(g.id, g.total)
     return map
-  }, [priorFiltered, flow, f.groupBy, accountsById])
+  }, [priorFiltered, flow, f.groupBy, accountsById, categoriesById])
   const priorFlowTotal = useMemo(
     () => priorFiltered.reduce((s, t) => (reportFlow(t) === flow ? s + (flow === 'spend' ? t.amount : -t.amount) : s), 0),
     [priorFiltered, flow],
@@ -796,7 +800,7 @@ function FlowSummaryReport({ f, flow, exportRef }: { f: FilterState; flow: Repor
       return { label: b.label, cells, total: bucketTotal }
     })
     return { groups, monthCols }
-  }, [filtered, flow, f.groupBy, accountsById, range.start, range.end])
+  }, [filtered, flow, f.groupBy, accountsById, categoriesById, range.start, range.end])
 
   const chartData = useMemo(
     () =>
@@ -1124,7 +1128,7 @@ function MonthlySummaryReport() {
   }, [txns])
   const topSpend = useMemo(
     () => groupSpend(txns, 'category', accountsById, categoriesById).slice(0, 5),
-    [txns, accountsById],
+    [txns, accountsById, categoriesById],
   )
   const topIncome = useMemo(
     () => groupFlow(txns, 'income', 'merchant', accountsById).slice(0, 5),
@@ -1295,6 +1299,17 @@ function BalanceReportView({ f, mode, exportRef }: { f: FilterState; mode: 'net-
   )
 }
 
+function ChurningReportView({ f, exportRef }: { f: FilterState; exportRef: ExportRef }) {
+  const now = useMemo(() => new Date(), [])
+  const range = useMemo(() => rangeFor(f.preset, now, f.customStart, f.customEnd), [f.preset, f.customStart, f.customEnd, now])
+  return (
+    <div className="flex flex-col gap-6">
+      <FilterBar f={f} showGroupBy={false} showFilters={false} />
+      <ChurningReport start={range.start} end={range.end} exportRef={exportRef} />
+    </div>
+  )
+}
+
 // ─── saved reports (localStorage) ─────────────────────────────────────────────
 
 interface SavedReport {
@@ -1339,6 +1354,7 @@ const REPORT_CARDS: { id: ReportId; title: string; hint: string; icon: LucideIco
   { id: 'net-worth', title: 'Net Worth', hint: 'Your net worth over time', icon: Coins, tint: 'bg-fuchsia-100 text-fuchsia-700' },
   { id: 'taxes', title: 'Taxes', hint: 'Taxable income and deductions', icon: Landmark, tint: 'bg-cyan-100 text-cyan-700' },
   { id: 'savings', title: 'Savings', hint: 'Savings progress over time', icon: PiggyBank, tint: 'bg-rose-100 text-rose-700' },
+  { id: 'churning', title: 'Churning', hint: 'Annual fees vs. credits sold and bonuses', icon: CreditCard, tint: 'bg-violet-100 text-violet-700' },
 ]
 
 const WIDE_CARDS: { id: ReportId; title: string; hint: string; chip: string; icon: LucideIcon; tint: string }[] = [
@@ -1470,6 +1486,7 @@ const REPORT_TITLES: Record<ReportId, string> = {
   'net-worth': 'Net Worth',
   taxes: 'Taxes',
   savings: 'Savings',
+  churning: 'Churning',
   forecast: 'Forecast',
 }
 
@@ -1484,6 +1501,7 @@ const FILTERED_REPORTS: ReportId[] = [
   'net-worth',
   'taxes',
   'savings',
+  'churning',
 ]
 
 /** Default range per report type (Simplifi's defaults). */
@@ -1491,6 +1509,7 @@ const DEFAULT_PRESET: Partial<Record<ReportId, Preset>> = {
   'net-worth': 'last-6',
   savings: 'last-6',
   taxes: 'ytd',
+  churning: 'ytd',
 }
 
 interface ReportTabState {
@@ -1580,14 +1599,20 @@ function ReportTab({
       {tab.report === 'net-worth' && <BalanceReportView f={f} mode="net-worth" exportRef={exportRef} />}
       {tab.report === 'taxes' && <TaxesReport f={f} exportRef={exportRef} />}
       {tab.report === 'savings' && <BalanceReportView f={f} mode="savings" exportRef={exportRef} />}
+      {tab.report === 'churning' && <ChurningReportView f={f} exportRef={exportRef} />}
       {tab.report === 'forecast' && <ForecastSection />}
     </div>
   )
 }
 
 export default function ReportsPage() {
-  const [tabs, setTabs] = useState<ReportTabState[]>([])
-  const [active, setActive] = useState<string>('home')
+  // ?open=<report> (e.g. the Churning page's "View report") opens that report.
+  const [searchParams] = useSearchParams()
+  const [tabs, setTabs] = useState<ReportTabState[]>(() => {
+    const id = searchParams.get('open') as ReportId | null
+    return id && id in REPORT_TITLES ? [{ key: 't-initial', report: id }] : []
+  })
+  const [active, setActive] = useState<string>(() => tabs[0]?.key ?? 'home')
   const [saved, setSaved] = useState<SavedReport[]>(() => loadSavedReports())
   const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState('')

@@ -27,6 +27,7 @@ vi.mock('@/data/hooks', () => ({
   useAccountsWithBalance: () => ({ data: [] }),
   useTransferGroupLegs: () => ({ data: null }),
   useSetExcludeFromTotals: () => ({ mutate: setExcludeMutate }),
+  useUnlinkTransfer: () => ({ mutate: vi.fn(), isPending: false }),
 }))
 
 describe('<CategoryPickerDialog>', () => {

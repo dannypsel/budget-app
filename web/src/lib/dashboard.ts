@@ -14,10 +14,11 @@ export interface SparkPoint {
 }
 
 /** Rows that count toward month totals (drops excluded/transfer legs), matching
- *  iOS `!excludeFromTotals`. The Home hook already excludes these, but filtering
- *  here keeps every derivation correct on any input. */
+ *  iOS `!excludeFromTotals`, and rows in a category excluded from reports
+ *  (Churning). The Home hook already excludes the former, but filtering here
+ *  keeps every derivation correct on any input. */
 function counted(txns: Transaction[]): Transaction[] {
-  return txns.filter((t) => !t.exclude_from_totals)
+  return txns.filter((t) => !t.exclude_from_totals && !t.categories?.exclude_from_reports)
 }
 
 /** Income MTD = Σ magnitude of credit rows (amount < 0), excluding reimbursements

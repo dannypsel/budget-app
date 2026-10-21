@@ -127,6 +127,18 @@ export function useUpsertCategory() {
   })
 }
 
+/** Set up Churning › Annual Fees / Credit Sales / Bonuses & Referrals (excluded from reports). */
+export function useEnsureChurningCategories() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: cats.ensureChurningCategories,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: sbKeys.categories })
+      qc.invalidateQueries({ queryKey: ['sb', 'transactions'] })
+    },
+  })
+}
+
 /** Persist a new category display order (drag-to-reorder). Writes sort_order per row,
  *  then refreshes the categories cache so every picker/list reflects the new order. */
 export function useReorderCategories() {

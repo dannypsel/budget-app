@@ -38,6 +38,7 @@ import {
 } from '@/lib/churning'
 import type { QualifyingWindow } from '@/data/churning'
 import { ProgressBar } from '@/components/finance/ProgressBar'
+import { ChurningMoneyCard } from '@/components/reports/ChurningReport'
 import type { ChurnBonus, ChurnCard, ChurnCardInsert, ChurnCredit, UUID } from '@/types/domain'
 import { formatCurrency } from '@/lib/money'
 import { formatShortDate } from '@/lib/dates'
@@ -75,6 +76,8 @@ export default function ChurningPage() {
           Add card
         </Button>
       </div>
+
+      <ChurningMoneyCard />
 
       {isLoading ? (
         <p className="text-sm text-muted-foreground">Loading cards…</p>

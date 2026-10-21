@@ -4,6 +4,7 @@
 import { supabase } from '@/lib/supabase'
 import type { Category, CategoryRule, RuleDirection, UUID } from '@/types/domain'
 import { logAddRule, logDeleteRule } from './activity'
+import { CHURNING_ROOT, CHURNING_SUBCATEGORIES, churningCategoryIds, churningRoot } from '@/lib/churningMoney'
 
 /** Active categories for the signed-in user (archived ones excluded unless
  *  includeInactive is set). Archived categories keep their history but stop
@@ -48,6 +49,32 @@ export async function upsertCategory(
     .single()
   if (error) throw error
   return data as Category
+}
+
+/** Create Churning and its subcategories (whichever are missing) and exclude the
+ *  whole subtree from reports. Idempotent. Returns the full category list. */
+export async function ensureChurningCategories(): Promise<Category[]> {
+  let all = await fetchCategories({ includeInactive: true })
+  let root = churningRoot(all)
+  if (!root) {
+    const sort = all.reduce((m, c) => Math.max(m, c.sort_order ?? 0), 0) + 1
+    root = await upsertCategory({ name: CHURNING_ROOT, color: '#8E4EC6', icon: 'creditcard.fill', kind: 'spend', sort_order: sort, exclude_from_reports: true })
+    all = [...all, root]
+  }
+  const missing = CHURNING_SUBCATEGORIES.filter(
+    (s) => !all.some((c) => c.parent_id === root!.id && c.name.trim().toLowerCase() === s.name.toLowerCase()),
+  )
+  if (missing.length) {
+    const { error } = await supabase.from('categories').insert(
+      missing.map((s, i) => ({ name: s.name, color: '#8E4EC6', icon: 'creditcard.fill', kind: s.kind, parent_id: root!.id, sort_order: i, exclude_from_reports: true })),
+    )
+    if (error) throw error
+    all = await fetchCategories({ includeInactive: true })
+  }
+  const ids = [...churningCategoryIds(all)]
+  const { error } = await supabase.from('categories').update({ exclude_from_reports: true, is_active: true }).in('id', ids)
+  if (error) throw error
+  return fetchCategories()
 }
 
 export async function deleteCategory(id: UUID): Promise<void> {

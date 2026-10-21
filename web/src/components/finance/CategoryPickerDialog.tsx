@@ -8,7 +8,8 @@ import { ArrowRight, Eye, EyeOff, MapPin, Plus, Undo2, XCircle } from 'lucide-re
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Switch } from '@/components/ui/switch'
 import { CategoryIcon } from './CategoryIcon'
-import { useAccountsWithBalance, useCategories, useSetExcludeFromTotals, useSetHidden, useSetReimbursement, useTransferGroupLegs, useUpsertCategory } from '@/data/hooks'
+import { useAccountsWithBalance, useCategories, useSetExcludeFromTotals, useSetHidden, useSetReimbursement, useTransferGroupLegs, useUnlinkTransfer, useUpsertCategory } from '@/data/hooks'
+import { toast } from 'sonner'
 import { TAG_PALETTE } from '@/lib/tagColors'
 import { displayName, isForeignCurrency, isReimbursement, isTransfer, merchantLocation, type Transaction, type UUID } from '@/types/domain'
 import { formatAmount, formatCurrency } from '@/lib/money'
@@ -35,6 +36,7 @@ export function CategoryPickerDialog({
   const setHidden = useSetHidden()
   const setReimbursement = useSetReimbursement()
   const setExcludeFromTotals = useSetExcludeFromTotals()
+  const unlinkTransfer = useUnlinkTransfer()
   const upsertCategory = useUpsertCategory()
   const [adding, setAdding] = useState(false)
   const [catQuery, setCatQuery] = useState('')
@@ -50,7 +52,7 @@ export function CategoryPickerDialog({
   )
   const transferSummary = useMemo(
     () => (groupLegs && groupLegs.length > 0 ? summarizeTransferGroup(groupLegs, accountsById) : null),
-    [groupLegs, accountsData],
+    [groupLegs, accountsById],
   )
 
   // A reimbursement is an incoming credit (amount < 0) that offsets a category's spend.
@@ -95,7 +97,7 @@ export function CategoryPickerDialog({
     }
   }
 
-  /** "Ignore in spending plan" — flips exclude_from_totals directly. Hidden and
+  /** Simplifi's "Exclude from spending plan and reports" — flips exclude_from_totals directly. Hidden and
    *  transfer legs are always excluded by their own flows, so the toggle is only
    *  offered on plain visible rows. */
   function toggleIgnored(exclude: boolean) {
@@ -152,10 +154,39 @@ export function CategoryPickerDialog({
                     {transferSummary.to ?? transferSummary.external ?? 'External'}
                   </span>
                 </p>
-                <p className="mt-1 text-xs text-muted-foreground">Excluded from spending totals</p>
+                <p className="mt-1 text-xs text-muted-foreground">Excluded from spending plan and reports</p>
               </div>
             ) : (
               <p className="px-1 text-sm text-muted-foreground">Loading transfer details…</p>
+            )}
+            {/* Simplifi lets a "transfer" count in reports. Unlinking puts both legs back
+                into totals (and stops auto-detection re-linking them); the row can then
+                be categorized — e.g. Churning › Credit Sales. */}
+            {txn.transfer_group_id && (
+              <button
+                type="button"
+                disabled={unlinkTransfer.isPending}
+                onClick={() =>
+                  unlinkTransfer.mutate(txn.transfer_group_id!, {
+                    onSuccess: () => {
+                      toast.success('Not a transfer anymore — it now counts in reports. Open it again to categorize it.')
+                      onOpenChange(false)
+                    },
+                    onError: (e) => toast.error(e instanceof Error ? e.message : 'Could not unlink'),
+                  })
+                }
+                className="flex w-full items-start gap-3 rounded-lg bg-surface-container-low px-3 py-2.5 text-left hover:bg-accent disabled:opacity-50"
+              >
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface-container-high text-muted-foreground">
+                  <Eye className="h-4 w-4" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-medium text-foreground">Not a transfer — include in reports</span>
+                  <span className="block text-xs text-muted-foreground">
+                    Unlinks both sides so they count as spending or income again
+                  </span>
+                </span>
+              </button>
             )}
           </>
         ) : (
@@ -215,7 +246,7 @@ export function CategoryPickerDialog({
                 />
               </label>
             )}
-            {/* Ignore in spending plan — flips exclude_from_totals, the same flag every
+            {/* Exclude from spending plan and reports — flips exclude_from_totals, the same flag every
                 totals query filters on. Hidden and transfer legs are always excluded, so
                 the toggle only applies to plain visible rows. */}
             {txn && !txn.hidden && !isTransfer(txn) && (
@@ -225,16 +256,16 @@ export function CategoryPickerDialog({
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block text-sm font-medium text-foreground">
-                    Ignore in spending plan
+                    Exclude from spending plan and reports
                   </span>
                   <span className="block text-xs text-muted-foreground">
-                    Leaves it out of spending totals without hiding it
+                    Leaves it out of spending, income and reports without hiding it
                   </span>
                 </span>
                 <Switch
                   checked={txn.exclude_from_totals}
                   onCheckedChange={toggleIgnored}
-                  aria-label="Ignore in spending plan"
+                  aria-label="Exclude from spending plan and reports"
                   className="mt-0.5"
                 />
               </label>

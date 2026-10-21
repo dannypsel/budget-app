@@ -558,7 +558,8 @@ export async function fetchSpendByCategory(
   const catById = new Map(cats.map((c) => [c.id, c]))
   return ((res.data ?? []) as Array<{ category_id: UUID; spent: number | string }>)
     .map((r) => ({ category: catById.get(r.category_id), total: Number(r.spent) }))
-    .filter((x): x is { category: Category; total: number } => x.category != null)
+    // Categories excluded from reports (e.g. Churning) aren't spending.
+    .filter((x): x is { category: Category; total: number } => x.category != null && !x.category.exclude_from_reports)
     .sort((a, b) => b.total - a.total)
 }
 
