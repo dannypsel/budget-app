@@ -24,6 +24,7 @@ vi.mock('@/data/hooks', () => ({
   useTransferGroupLegs: () => ({ data: null }),
   useSetExcludeFromTotals: () => ({ mutate: vi.fn() }),
   useUnlinkTransfer: () => ({ mutate: vi.fn(), isPending: false }),
+  useSetExcludeFromReports: () => ({ mutate: vi.fn() }),
 }))
 
 beforeEach(() => mutate.mockClear())

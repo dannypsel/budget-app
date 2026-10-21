@@ -14,7 +14,7 @@
 //
 // PocketLens sign convention: amount > 0 = expense, amount < 0 = income.
 
-import { displayName, hasSplits, isTransfer, txnTags, type Account, type Category, type Transaction, type UUID } from '@/types/domain'
+import { displayName, excludedFromReports, hasSplits, isTransfer, txnTags, type Account, type Category, type Transaction, type UUID } from '@/types/domain'
 
 export type Operator = '=' | ':' | '!=' | '>' | '>=' | '<' | '<=' | '~=' | 'range'
 
@@ -499,7 +499,7 @@ function matchConstraint(t: Transaction, c: Constraint, ctx: MatchContext): bool
     case 'reviewed':
       return matchBool(!!t.reviewed, c)
     case 'exclusion':
-      return matchBool(t.exclude_from_totals || t.hidden, c)
+      return matchBool(t.exclude_from_totals || excludedFromReports(t) || t.hidden, c)
     case 'transfer':
       return matchBool(isTransfer(t), c)
     case 'split':

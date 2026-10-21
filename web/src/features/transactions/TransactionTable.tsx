@@ -16,6 +16,7 @@ import { CategoryBadge } from '@/components/finance/CategoryBadge'
 import { groupRegister, monthLabel, PENDING, rowDate } from './registerGroups'
 import { cn } from '@/lib/utils'
 import {
+  excludedFromReports,
   displayName,
   hasSplits,
   isReimbursement,
@@ -67,7 +68,7 @@ function CategoryCell({ t }: { t: Transaction }) {
 function exclusionLabel(t: Transaction): string {
   if (isTransfer(t)) return 'Transfer'
   if (t.hidden) return 'Hidden'
-  if (t.exclude_from_totals || t.categories?.exclude_from_reports) return 'Excluded'
+  if (t.exclude_from_totals || excludedFromReports(t) || t.categories?.exclude_from_reports) return 'Excluded'
   return ''
 }
 

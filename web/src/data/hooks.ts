@@ -690,6 +690,15 @@ export function useSetExcludeFromTotals() {
   })
 }
 
+export function useSetExcludeFromReports() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ transactionId, exclude }: { transactionId: UUID; exclude: boolean }) =>
+      txns.setExcludeFromReports(transactionId, exclude),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['sb', 'transactions'] }),
+  })
+}
+
 /** Detected recurring series (client-side) with the user's overrides applied. */
 export function useRecurringSeries() {
   return useQuery({ queryKey: sbKeys.recurring, queryFn: recurringApi.fetchRecurringSeries })

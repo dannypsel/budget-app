@@ -9,6 +9,7 @@
 import { flowOf, type Flow } from '@/lib/classify'
 import { rootCategory } from '@/lib/categoryTree'
 import {
+  excludedFromReports,
   displayName,
   isTransfer,
   type Account,
@@ -40,13 +41,13 @@ export interface ReportExcludes {
 }
 
 /** Drop transfer legs and/or budget-ignored rows. Transfer legs are identified by
- *  transfer_group_id != null (covers both legs). "Ignored" is exclude_from_totals=true
+ *  transfer_group_id != null (covers both legs). "Ignored" is excluded from reports (exclude_from_reports / hidden)
  *  on a NON-transfer row — user-hidden/user-excluded rows — the same split the
  *  Spending Plan totals use. */
 export function applyExcludes(txns: Transaction[], opts: ReportExcludes): Transaction[] {
   return txns.filter((t) => {
     if (opts.excludeTransfers && isTransfer(t)) return false
-    if (opts.excludeIgnored && !isTransfer(t) && (t.exclude_from_totals || t.categories?.exclude_from_reports))
+    if (opts.excludeIgnored && !isTransfer(t) && (excludedFromReports(t) || t.hidden || t.categories?.exclude_from_reports))
       return false
     return true
   })
@@ -59,7 +60,7 @@ export function reportFlow(t: Transaction): Exclude<Flow, 'excluded' | 'transfer
   const f = flowOf(t)
   if (f === 'spend' || f === 'income') return f
   if (f === 'excluded') {
-    const kept = flowOf({ ...t, exclude_from_totals: false, hidden: false }, t.categories && { ...t.categories, exclude_from_reports: false })
+    const kept = flowOf({ ...t, exclude_from_totals: false, exclude_from_reports: false, hidden: false }, t.categories && { ...t.categories, exclude_from_reports: false })
     if (kept === 'spend' || kept === 'income') return kept
   }
   return t.amount > 0 ? 'spend' : 'income'

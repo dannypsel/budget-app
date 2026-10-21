@@ -6,20 +6,20 @@
 // PocketLens sign convention: amount > 0 = outflow, amount < 0 = inflow.
 //   transfer  linked transfer leg (own-account moves, incl. one-sided legs), or an
 //             uncategorized inflow Plaid tags as a transfer
-//   excluded  user-excluded (exclude_from_totals / hidden) or a category that is
+//   excluded  user-excluded from reports (exclude_from_reports / hidden) or a category that is
 //             excluded from reports
 //   income    inflows on an income category; other uncategorized inflows (income-by-sign)
 //   spend     every other row. A credit on a spend category (refund,
 //             reimbursement) is negative spend; an outflow is never income
 //             (the standing rule, commit 8286b37), even on an income category.
 
-import { isTransfer, isTransferCategory, type Category, type Transaction } from '@/types/domain'
+import { excludedFromReports, isTransfer, isTransferCategory, type Category, type Transaction } from '@/types/domain'
 
 export type Flow = 'spend' | 'income' | 'transfer' | 'excluded'
 
 export function flowOf(t: Transaction, category: Category | null | undefined = t.categories): Flow {
   if (isTransfer(t)) return 'transfer'
-  if (t.exclude_from_totals || t.hidden) return 'excluded'
+  if (excludedFromReports(t) || t.hidden) return 'excluded'
   if (category?.exclude_from_reports) return 'excluded'
   if (category) {
     if (category.kind === 'income' && !t.is_reimbursement && t.amount <= 0) return 'income'

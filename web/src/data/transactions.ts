@@ -219,6 +219,13 @@ export async function setExcludeFromTotals(
   if (error) throw error
 }
 
+/** Simplifi's per-transaction "Exclude from reports" (Reports + Transactions
+ *  analysis), independent of the spending-plan switch above. */
+export async function setExcludeFromReports(transactionId: UUID, exclude: boolean): Promise<void> {
+  const { error } = await supabase.from('transactions').update({ exclude_from_reports: exclude }).eq('id', transactionId)
+  if (error) throw error
+}
+
 /** Mark/unmark rows reviewed (Simplifi's Reviewed check — separate from
  *  categorized and from Pending/Cleared). Chunked bulk update by id. */
 export async function setReviewed(ids: UUID[], reviewed: boolean): Promise<void> {

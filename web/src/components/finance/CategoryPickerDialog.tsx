@@ -8,10 +8,10 @@ import { ArrowRight, Eye, EyeOff, MapPin, Plus, Undo2, XCircle } from 'lucide-re
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Switch } from '@/components/ui/switch'
 import { CategoryIcon } from './CategoryIcon'
-import { useAccountsWithBalance, useCategories, useSetExcludeFromTotals, useSetHidden, useSetReimbursement, useTransferGroupLegs, useUnlinkTransfer, useUpsertCategory } from '@/data/hooks'
+import { useAccountsWithBalance, useCategories, useSetExcludeFromReports, useSetExcludeFromTotals, useSetHidden, useSetReimbursement, useTransferGroupLegs, useUnlinkTransfer, useUpsertCategory } from '@/data/hooks'
 import { toast } from 'sonner'
 import { TAG_PALETTE } from '@/lib/tagColors'
-import { displayName, isForeignCurrency, isReimbursement, isTransfer, merchantLocation, type Transaction, type UUID } from '@/types/domain'
+import { displayName, excludedFromReports, isForeignCurrency, isReimbursement, isTransfer, merchantLocation, type Transaction, type UUID } from '@/types/domain'
 import { formatAmount, formatCurrency } from '@/lib/money'
 import { formatShortDate } from '@/lib/dates'
 import { summarizeTransferGroup } from '@/data/transfers'
@@ -36,6 +36,7 @@ export function CategoryPickerDialog({
   const setHidden = useSetHidden()
   const setReimbursement = useSetReimbursement()
   const setExcludeFromTotals = useSetExcludeFromTotals()
+  const setExcludeFromReports = useSetExcludeFromReports()
   const unlinkTransfer = useUnlinkTransfer()
   const upsertCategory = useUpsertCategory()
   const [adding, setAdding] = useState(false)
@@ -62,10 +63,15 @@ export function CategoryPickerDialog({
   const [reimbursing, setReimbursing] = useState(() => (txn ? isReimbursement(txn) : false))
   // Re-seed the toggle from the txn whenever a different one is shown (the dialog is a
   // single reused instance). React's recommended render-phase "reset on prop change".
+  // The dialog gets a snapshot row; local state shows each switch flip at once.
+  const [excludePlan, setExcludePlan] = useState(() => txn?.exclude_from_totals ?? false)
+  const [excludeReports, setExcludeReports] = useState(() => (txn ? excludedFromReports(txn) : false))
   const [lastTxnId, setLastTxnId] = useState(txn?.id ?? null)
   if ((txn?.id ?? null) !== lastTxnId) {
     setLastTxnId(txn?.id ?? null)
     setReimbursing(txn ? isReimbursement(txn) : false)
+    setExcludePlan(txn?.exclude_from_totals ?? false)
+    setExcludeReports(txn ? excludedFromReports(txn) : false)
   }
 
   /** Route a category choice: in reimbursement mode mark the contra-expense (needs a
@@ -95,14 +101,6 @@ export function CategoryPickerDialog({
       })
       onOpenChange(false)
     }
-  }
-
-  /** Simplifi's "Exclude from spending plan and reports" — flips exclude_from_totals directly. Hidden and
-   *  transfer legs are always excluded by their own flows, so the toggle is only
-   *  offered on plain visible rows. */
-  function toggleIgnored(exclude: boolean) {
-    if (!txn) return
-    setExcludeFromTotals.mutate({ transactionId: txn.id, exclude })
   }
 
   /** Create the category and immediately assign it to the txn. */
@@ -246,29 +244,29 @@ export function CategoryPickerDialog({
                 />
               </label>
             )}
-            {/* Exclude from spending plan and reports — flips exclude_from_totals, the same flag every
-                totals query filters on. Hidden and transfer legs are always excluded, so
-                the toggle only applies to plain visible rows. */}
+            {/* Simplifi's two per-transaction switches. Hidden rows and transfer legs
+                are always out of both, so they're only offered on plain visible rows. */}
             {txn && !txn.hidden && !isTransfer(txn) && (
-              <label className="mb-1 flex items-start gap-3 rounded-lg bg-surface-container-low px-3 py-2.5">
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface-container-high text-muted-foreground">
-                  <EyeOff className="h-4 w-4" />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block text-sm font-medium text-foreground">
-                    Exclude from spending plan and reports
-                  </span>
-                  <span className="block text-xs text-muted-foreground">
-                    Leaves it out of spending, income and reports without hiding it
-                  </span>
-                </span>
-                <Switch
-                  checked={txn.exclude_from_totals}
-                  onCheckedChange={toggleIgnored}
-                  aria-label="Exclude from spending plan and reports"
-                  className="mt-0.5"
+              <>
+                <ExcludeSwitch
+                  title="Exclude from spending plan"
+                  hint="Leaves it out of the spending plan, budgets and dashboard totals"
+                  checked={excludePlan}
+                  onChange={(on) => {
+                    setExcludePlan(on)
+                    setExcludeFromTotals.mutate({ transactionId: txn.id, exclude: on })
+                  }}
                 />
-              </label>
+                <ExcludeSwitch
+                  title="Exclude from reports"
+                  hint="Leaves it out of Reports and the Transactions spending and income totals"
+                  checked={excludeReports}
+                  onChange={(on) => {
+                    setExcludeReports(on)
+                    setExcludeFromReports.mutate({ transactionId: txn.id, exclude: on })
+                  }}
+                />
+              </>
             )}
             {/* Simplifi-style tree: each top-level category with its subcategories. */}
             <input
@@ -380,5 +378,20 @@ export function CategoryPickerDialog({
 
       </DialogContent>
     </Dialog>
+  )
+}
+
+function ExcludeSwitch({ title, hint, checked, onChange }: { title: string; hint: string; checked: boolean; onChange: (on: boolean) => void }) {
+  return (
+    <label className="mb-1 flex items-start gap-3 rounded-lg bg-surface-container-low px-3 py-2.5">
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface-container-high text-muted-foreground">
+        <EyeOff className="h-4 w-4" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm font-medium text-foreground">{title}</span>
+        <span className="block text-xs text-muted-foreground">{hint}</span>
+      </span>
+      <Switch checked={checked} onCheckedChange={onChange} aria-label={title} className="mt-0.5" />
+    </label>
   )
 }

@@ -7,6 +7,7 @@ import { makeCategory, makeTxn } from '@/test/factories'
 const setHiddenMutate = vi.fn()
 const setReimbursementMutate = vi.fn()
 const setExcludeMutate = vi.fn()
+const setExcludeReportsMutate = vi.fn()
 const upsertCategoryAsync = vi.fn()
 
 // The Simplifi details section (flags, notes, splits, attachments…) is covered in
@@ -28,9 +29,20 @@ vi.mock('@/data/hooks', () => ({
   useTransferGroupLegs: () => ({ data: null }),
   useSetExcludeFromTotals: () => ({ mutate: setExcludeMutate }),
   useUnlinkTransfer: () => ({ mutate: vi.fn(), isPending: false }),
+  useSetExcludeFromReports: () => ({ mutate: setExcludeReportsMutate }),
 }))
 
 describe('<CategoryPickerDialog>', () => {
+  it('has separate spending-plan and reports exclude switches, like Simplifi', async () => {
+    render(<CategoryPickerDialog txn={makeTxn({ id: 't-x' })} open onOpenChange={() => {}} onPick={() => {}} />)
+    await userEvent.click(screen.getByRole('switch', { name: 'Exclude from reports' }))
+    expect(setExcludeReportsMutate).toHaveBeenCalledWith({ transactionId: 't-x', exclude: true })
+    expect(setExcludeMutate).not.toHaveBeenCalled()
+    expect(screen.getByRole('switch', { name: 'Exclude from reports' })).toBeChecked()
+    await userEvent.click(screen.getByRole('switch', { name: 'Exclude from spending plan' }))
+    expect(setExcludeMutate).toHaveBeenCalledWith({ transactionId: 't-x', exclude: true })
+  })
+
   it('renders the category grid + None and fires onPick', async () => {
     const onPick = vi.fn()
     render(

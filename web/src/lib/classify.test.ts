@@ -42,3 +42,12 @@ describe('flowOf (Simplifi: category type decides, never the sign)', () => {
     expect(flowOf(makeTxn({ amount: -12, categories: paycheck, is_reimbursement: true }))).toBe('spend')
   })
 })
+
+describe('the two exclude switches', () => {
+  it('only "Exclude from reports" takes a row out of report flows', () => {
+    expect(flowOf(makeTxn({ amount: 20, exclude_from_totals: true, exclude_from_reports: false }))).toBe('spend')
+    expect(flowOf(makeTxn({ amount: 20, exclude_from_totals: false, exclude_from_reports: true }))).toBe('excluded')
+    // Rows read before the migration fall back to the single flag they had.
+    expect(flowOf(makeTxn({ amount: 20, exclude_from_totals: true }))).toBe('excluded')
+  })
+})

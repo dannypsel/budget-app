@@ -69,7 +69,13 @@ export interface Transaction {
   category_id: UUID | null
   notes: string | null
   pending: boolean
+  /** Simplifi's "Exclude from spending plan": out of the spending plan, budgets
+   *  (category_spend) and dashboard totals. */
   exclude_from_totals: boolean
+  /** Simplifi's "Exclude from reports": out of Reports and the Transactions
+   *  spending/income analysis. Absent before the 20261102 migration — read it
+   *  through excludedFromReports(). */
+  exclude_from_reports?: boolean
   transfer_group_id: UUID | null // non-null = one leg of a linked transfer
   transfer_kind: 'auto' | 'manual' | 'one_sided' | null // provenance; set iff grouped
   transfer_opt_out: boolean // user said "not a transfer" — auto-detection skips it
@@ -112,6 +118,12 @@ export function hasSplits(t: Transaction): boolean {
 }
 
 /** True when the txn is linked into a transfer group (excluded from totals). */
+/** The row's "Exclude from reports" switch (pre-migration rows fall back to the
+ *  single exclude flag they had then). */
+export function excludedFromReports(t: Transaction): boolean {
+  return t.exclude_from_reports ?? t.exclude_from_totals
+}
+
 export function isTransfer(t: Transaction): boolean {
   return t.transfer_group_id != null
 }
