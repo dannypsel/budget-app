@@ -16,9 +16,13 @@ import {
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { useAccountsWithBalance, usePlaidItems, useSeparateAccounts } from '@/data/hooks'
+import { setBalanceMode, useBalanceMode, type BalanceMode } from '@/lib/balancePref'
 import { formatRelativeTime } from '@/lib/dates'
 import { isLiabilityType } from '@/types/domain'
 import { formatCurrency } from '@/lib/money'
@@ -134,6 +138,7 @@ export default function AccountsOverview({
       }
       return next
     })
+  const balanceMode = useBalanceMode()
   const { data: plaidItems = [] } = usePlaidItems()
   const lastSynced = useMemo(
     () =>
@@ -249,6 +254,12 @@ export default function AccountsOverview({
               <DropdownMenuCheckboxItem checked={showClosed} onCheckedChange={setShowClosed}>
                 Show Closed Accounts
               </DropdownMenuCheckboxItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>Bank balances</DropdownMenuLabel>
+              <DropdownMenuRadioGroup value={balanceMode} onValueChange={(v) => setBalanceMode(v as BalanceMode)}>
+                <DropdownMenuRadioItem value="include-pending">Include pending transactions</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="bank">Bank reported</DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
             </DropdownMenuContent>
           </DropdownMenu>
           <Link to="/accounts" className="whitespace-nowrap text-sm font-semibold text-primary hover:underline">

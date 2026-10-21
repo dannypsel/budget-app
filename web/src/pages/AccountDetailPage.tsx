@@ -152,6 +152,13 @@ export default function AccountDetailPage() {
             <p className="text-hero-number text-muted-foreground">—</p>
           )}
 
+          {account.pendingTotal != null && Math.abs(account.pendingTotal) > 0.005 && account.bankBalance != null && (
+            <p className="text-xs text-muted-foreground">
+              {account.currentBalance !== account.bankBalance
+                ? `Includes ${formatCurrency(Math.abs(account.pendingTotal))} pending · bank balance ${formatCurrency(account.bankBalance)}`
+                : `${formatCurrency(Math.abs(account.pendingTotal))} pending not included`}
+            </p>
+          )}
           {availableDiffers && available != null && (
             <p className="text-xs text-muted-foreground">
               Available · {formatCurrency(available)}

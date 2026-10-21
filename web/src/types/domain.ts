@@ -191,8 +191,12 @@ export interface Account {
   currency: string
   is_active: boolean
   display_order: number
-  // client-only, filled from account_balance_history
+  // client-only, filled from account_balance_history (+ pending, per the balance mode)
   currentBalance?: number | null
+  /** Bank-reported balance before pending adjustment. */
+  bankBalance?: number | null
+  /** Σ amount of this account's pending transactions (+ = outflow). */
+  pendingTotal?: number
 }
 
 /** budget_limits row — an effective-dated monthly limit. `monthly_limit` of 0 means the

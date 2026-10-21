@@ -2,7 +2,7 @@
 // The only two calls that go to the Render backend instead of Supabase.
 
 import { supabase } from '@/lib/supabase'
-import { warmFetch } from '@/data/backend'
+import { warm } from '@/data/backend'
 
 const BACKEND = import.meta.env.VITE_BACKEND_URL as string
 
@@ -27,17 +27,84 @@ function asNumber(v: unknown): number | undefined {
   return typeof v === 'number' && Number.isFinite(v) ? v : undefined
 }
 
-/** Run a Plaid sync for the signed-in user. The backend runs the full sync
- *  inline (Lambda) and the promise resolves with its summary once complete. */
-export async function triggerSync(): Promise<SyncSummary> {
+const POLL_MS = 3000
+const START_GRACE_MS = 45_000
+const MAX_WAIT_MS = 10 * 60_000
+
+interface SyncLogRow {
+  status: string
+  started_at: string
+  finished_at: string | null
+  error_message: string | null
+  transactions_added: number | null
+  transactions_modified: number | null
+}
+
+/** The newest sync_log row started at/after `sinceISO`, or null. */
+async function latestSyncLog(sinceISO: string): Promise<SyncLogRow | null> {
+  const { data, error } = await supabase
+    .from('sync_log')
+    .select('status, started_at, finished_at, error_message, transactions_added, transactions_modified')
+    .gte('started_at', sinceISO)
+    .order('started_at', { ascending: false })
+    .limit(1)
+  if (error) throw error
+  return ((data ?? [])[0] as SyncLogRow | undefined) ?? null
+}
+
+/** The request outlived API Gateway's 30 s integration cap (its timeout reply
+ *  has no CORS headers, so the browser only sees a failed fetch), but Lambda
+ *  keeps running. Follow the run through sync_log until it finishes. */
+async function waitForSyncLog(sinceISO: string, sleep: (ms: number) => Promise<void>): Promise<SyncSummary> {
+  const t0 = Date.now()
+  for (;;) {
+    const row = await latestSyncLog(sinceISO)
+    if (row && row.status !== 'running') {
+      if (row.status === 'error') throw new Error('Sync failed on the server — check the sync log')
+      return {
+        status: row.status,
+        transactions_added: asNumber(row.transactions_added),
+        transactions_modified: asNumber(row.transactions_modified),
+      }
+    }
+    const waited = Date.now() - t0
+    if (!row && waited > START_GRACE_MS) throw new Error('Sync did not start — try again')
+    if (waited > MAX_WAIT_MS) throw new Error('Sync is taking unusually long — check back shortly')
+    await sleep(POLL_MS)
+  }
+}
+
+/** POST once after warming the function. 'timeout' = API Gateway gave up (or the
+ *  network dropped) while Lambda may still be running the long request. */
+async function postOnce(path: string): Promise<Response | 'timeout'> {
   const token = await accessToken()
-  // warmFetch rides out a cold start — /sync/trigger is idempotent (a second
-  // sync for the same items is a harmless no-op), so retrying a dropped/502
-  // first hit is safe (see backend.ts).
-  const res = await warmFetch(`${BACKEND}/sync/trigger`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
+  await warm().catch(() => {})
+  try {
+    const res = await fetch(`${BACKEND}${path}`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } })
+    return res.status === 502 || res.status === 503 || res.status === 504 ? 'timeout' : res
+  } catch {
+    return 'timeout'
+  }
+}
+
+let inFlight: Promise<SyncSummary> | null = null
+
+/** Run a Plaid sync for the signed-in user. POSTs /sync/trigger exactly once —
+ *  never retried, because a retry starts a second full sync on top of the one
+ *  still running. A refresh that outlasts the API Gateway timeout is followed
+ *  to completion via sync_log. Concurrent callers (sign-in auto-sync + a tap)
+ *  share one run. */
+export function triggerSync(): Promise<SyncSummary> {
+  inFlight ??= runSync().finally(() => {
+    inFlight = null
   })
+  return inFlight
+}
+
+async function runSync(sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))): Promise<SyncSummary> {
+  const sinceISO = new Date(Date.now() - 5000).toISOString()
+  const res = await postOnce('/sync/trigger')
+  if (res === 'timeout') return waitForSyncLog(sinceISO, sleep)
   if (!res.ok) throw new Error(`Sync failed: HTTP ${res.status}`)
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>
   return {
@@ -47,6 +114,9 @@ export async function triggerSync(): Promise<SyncSummary> {
     transactions_modified: asNumber(body.transactions_modified),
   }
 }
+
+/** Test hook: run one sync with an injected sleep, bypassing the shared in-flight run. */
+export const __runSyncForTest = runSync
 
 /** Human-readable one-liner for a sync summary. Tolerates a summary with no
  *  numbers (e.g. from an older fire-and-forget backend) — always returns a
@@ -64,12 +134,9 @@ export function describeSyncSummary(summary: SyncSummary): string {
 
 /** Reset the cursor for a newly-linked item and kick off a full historical sync. */
 export async function requestBackfill(itemId: string): Promise<void> {
-  const token = await accessToken()
-  const res = await warmFetch(`${BACKEND}/backfill/${encodeURIComponent(itemId)}`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
-  })
-  if (!res.ok) throw new Error(`Backfill failed: HTTP ${res.status}`)
+  const res = await postOnce(`/backfill/${encodeURIComponent(itemId)}`)
+  // A history pull outlasting the gateway timeout keeps running in Lambda.
+  if (res !== 'timeout' && !res.ok) throw new Error(`Backfill failed: HTTP ${res.status}`)
 }
 
 /** Result of a full sync request. `cooldown` means the user full-synced too
@@ -82,11 +149,9 @@ export type BackfillAllResult =
  *  window. Rate-limited server-side — a 429 resolves to a `cooldown` result
  *  (not thrown) so the caller can surface when the next full sync is available. */
 export async function backfillAll(): Promise<BackfillAllResult> {
-  const token = await accessToken()
-  const res = await warmFetch(`${BACKEND}/backfill-all`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
-  })
+  const res = await postOnce('/backfill-all')
+  // Outlasted the gateway timeout: the full re-pull is running server-side.
+  if (res === 'timeout') return { status: 'ok', items: 0 }
   if (res.status === 429) {
     const body = (await res.json().catch(() => ({}))) as { next_at?: string }
     return { status: 'cooldown', next_at: body.next_at ?? '' }

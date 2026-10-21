@@ -24,6 +24,7 @@ import * as balanceHistoryApi from './balanceHistory'
 import type { TxnTagPatch } from './txnTags'
 import { fetchPlaidItems, deleteItem as deletePlaidItem } from './plaidItems'
 import { toISODate } from '@/lib/dates'
+import { useBalanceMode } from '@/lib/balancePref'
 import type {
   BillInsert,
   Category,
@@ -283,9 +284,10 @@ export function useTransactionsByAccount(accountId: UUID) {
 }
 
 export function useAccountsWithBalance() {
+  const mode = useBalanceMode()
   return useQuery({
-    queryKey: sbKeys.accountsWithBalance,
-    queryFn: accts.fetchAccountsWithLatestBalance,
+    queryKey: [...sbKeys.accountsWithBalance, mode] as const,
+    queryFn: () => accts.fetchAccountsWithLatestBalance(mode),
   })
 }
 export function useAccounts() {

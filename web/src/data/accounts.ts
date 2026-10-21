@@ -5,6 +5,7 @@ import { warmFetch } from '@/data/backend'
 
 const BACKEND = import.meta.env.VITE_BACKEND_URL as string
 import type { Account, CurrentNetWorth } from '@/types/domain'
+import { withPending, type BalanceMode } from '@/lib/balancePref'
 
 export async function fetchAccounts(
   opts: { includeInactive?: boolean } = {},
@@ -16,21 +17,39 @@ export async function fetchAccounts(
   return (data ?? []) as Account[]
 }
 
-/** Accounts with most-recent balance per account. */
-export async function fetchAccountsWithLatestBalance(): Promise<Account[]> {
+/** Accounts with most-recent balance per account. With `include-pending`
+ *  (Simplifi's default) the bank balance is moved by the account's pending
+ *  transactions; `bankBalance` / `pendingTotal` keep both parts. */
+export async function fetchAccountsWithLatestBalance(mode: BalanceMode = 'include-pending'): Promise<Account[]> {
   const accounts = await fetchAccounts()
   // latest_balances = newest non-null-balance row per account, so no full-history scan.
-  const { data, error } = await supabase
-    .from('latest_balances')
-    .select('account_id, current_balance')
+  const [{ data, error }, pending] = await Promise.all([
+    supabase.from('latest_balances').select('account_id, current_balance'),
+    fetchPendingTotals(),
+  ])
   if (error) throw error
 
   const rows = (data ?? []) as { account_id: string; current_balance: number }[]
   const balanceByAccount = new Map(rows.map((r) => [r.account_id, r.current_balance]))
   for (const a of accounts) {
-    a.currentBalance = balanceByAccount.get(a.id) ?? null
+    const bank = balanceByAccount.get(a.id)
+    const p = pending.get(a.id) ?? 0
+    a.bankBalance = bank ?? null
+    a.pendingTotal = p
+    a.currentBalance = bank == null ? null : mode === 'include-pending' ? withPending(a.type, Number(bank), p) : bank
   }
   return accounts
+}
+
+/** account id → Σ amount of its pending transactions (+ = outflow). */
+export async function fetchPendingTotals(): Promise<Map<string, number>> {
+  const { data, error } = await supabase.from('transactions').select('account_id, amount').eq('pending', true)
+  if (error) throw error
+  const out = new Map<string, number>()
+  for (const r of (data ?? []) as { account_id: string; amount: number }[]) {
+    out.set(r.account_id, Math.round(((out.get(r.account_id) ?? 0) + Number(r.amount)) * 100) / 100)
+  }
+  return out
 }
 
 /** Live net worth (+ its "as of" date) from the current_net_worth view — same math
